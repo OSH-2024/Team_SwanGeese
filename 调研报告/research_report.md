@@ -1,18 +1,41 @@
 # 调研报告
 
-## AI-GPU显存优化
+## Ray+大模型分布式部署优化
 
 - [调研报告](#调研报告)
-  - [AI-GPU显存优化](#AI-GPU显存优化)
+  - [Ray+大模型分布式部署优化](#Ray+大模型分布式部署优化)
     - [组员](#组员)
     - [项目背景](#项目背景)
+      - [大模型的内存瓶颈](#大模型的内存瓶颈)
+      - [Ray](#Ray)
+        - [什么是Ray](#什么是Ray)
+        - [为何选择Ray](#为何选择Ray)
+        - [分布式的挑战](#分布式的挑战)
     - [立项依据/技术路线](#立项依据技术路线)
+      - [Ray](#1.Ray)
+        - [Ray分布式计算框架](#11-ray分布式计算框架)
+        - [Ray编程模型](#12-ray编程模型)
+        - [Ray计算模型](#13-ray计算模型)
+        - [分布式调度器](#14-分布式调度器)
+        - [分布式对象存储器](#15-分布式对象存储器)
+        - [Ray框架相比Spark的优/缺点](#16-ray框架相比spark的优缺点)
+      - [Deepspeed ZERO](#2-deepspeed-zero)
+        - [ZERO的三个级别](#21-zero的三个级别)
+          - [ZeRO-1](#211-zero-1)
+          - [ZeRO-2](#212-zero-2)
+          - [ZeRO-3](#213-zero-3)    
+      - [零拷贝技术](#3-零拷贝技术)      
     - [前瞻性/重要性分析](#前瞻性重要性分析)
+      - [大模型的未来发展](#1-大模型的未来发展)
+      - [Ray](#2-ray)
     - [相关工作](#相关工作)
+      - [利用Ray进行AI训练](#利用ray进行ai训练1)
+      - [利用Ray进行大模型训练](#利用ray进行大模型训练)
+      - [利用Ray和其他工具实现模型训练优化](#更深一步利用ray和其他工具实现模型训练优化)
     - [参考文献](#参考文献)
 
 
-### 组员
+## 组员
 
 **殷一鸣**
 **何跃强**
@@ -22,291 +45,326 @@
 
 
 
-### 项目背景
+## 项目背景
+---
+### 大模型的内存瓶颈
+
+​	AI模型的规模在过去4年维持了每年10倍的增长。2021年的产生的大模型已经达到1 trillion parameters。而最近分布式训练号称可以支撑100trillion parameters，似乎这个趋势还能继续维持两年以上。练巨大的模型必然需要底层基础软件和芯片的支撑。然而GPU在过去4年中，无论是显存空间，或者是算力的增长，都在10倍这个数量级，显然跟不上10000倍的模型规模增长。这些大模型的参数规模给训练系统带来了新的挑战，例如内存瓶颈，糟糕的运行时效率，较高的模型开发成本。
+
+​	近年来，ML/AI模型的规模增长迅速，远超过了硬件能力的增长。$Ion ~Stoica$ 说过：满足足够的计算能力需求的唯一方法是分布式。随着数据规模的扩大和计算复杂度的增加，单机计算能力已经无法满足大规模数据处理和计算的需 求，分布式计算逐渐成为一种重要的数据处理和计算方式。	
+
+​	分布式模型的兴起与发展
+
+​	分布式训练的起源可以追溯到20世纪90年代，当时由于计算机处理能力的限制，无法处理大规模的数据集和复杂的机器学习模型。随着计算机技术的发展，分布式计算框架如Hadoop和Spark开始被广泛采用，使得分布式训练成为可能。分布式训练能够将大规模数据集拆分成多个小数据集，分别存储在多台计算机上，并同时进行模型训练，从而大大缩短训练时间。
+
+​	2017 年伯克利大学 RISELab 实验室开 发出了一个针对深度强化学习通用异步并行框架 Ray, Ray 的分布式迭代作业从任务级别降到了函数级别,有 效地解决了 Spark 对强化学习的不支持。故本文提出的 RRLP 平台采用 Ray 作为主体框架,可以完美地解决强 化学习模型训练过程中频繁的数据收集和再分发。Ray 不仅可以异步并行的分发任务,还可以共享所有的存储 资源,从而获得了更加适宜并行分布式强化学习计算的优异性能。
+
+### Ray
+#### 什么是 Ray
+
+​	Ray是伯克利大学RISELab研发的分布式计算系统，是一个用于构建高性能分布式应用程序的开源系统。Ray 的独特功能之一是它的主内存对象存储 Plasma，它使用共享内存在 Ray 集群中每台机器上的进程之间传递对象。Ray 使用 Plasma 来实现 NumPy 数组的零拷贝传输。在传统的并行计算框架中，任务调度器和元数据存储器是集中式的，即集群中一般只有一个大的任务调度器和元数据存储器，这一设计也是符合直觉的。然而为了满足性能需求，Ray使用了分布式的任务调度器和元数据存储器设计，从而满足了Ray的毫秒百万级并发量的需求。Ray还为任务和行动器提供了基于Lineage的容错机制，同时为元数据存储提供了基于复制的容错机制。这些将在后文详细介绍。
+
+#### ​为何选择 Ray
+
+​		MapReduce	MapReduce是一种编程模型，用于在大型计算集群上并行处理大数据集。它主要由两个阶段组成：Map阶段和Reduce阶段，之间通过磁盘进行数据交换。但其磁盘IO开销大：Map和Reduce阶段之间的中间数据需要写入磁盘，造成大量的磁盘IO，这是其性能瓶颈之一，对于需要多次迭代的任务（如机器学习算法），每次迭代都需要从头开始读写磁盘，效率低下，不适合实时数据处理。
+
+​		Spark	Apache Spark是一个开源的分布式计算系统，设计初衷是为了解决MapReduce在迭代计算和实时处理方面的不足。但其由于依赖内存处理，对资源的消耗相对较大，尤其是处理大数据集时可能需要较多的内存资源，虽然提供了丰富的功能，但相对于MapReduce，学习和使用Spark的门槛较高.
+
+
+### 	分布式的挑战
+
+​	分布式模型推理已经是人工智能领域的一个重要技术，但仍然存在一些未来发展趋势与挑战：
+
+​		任务分配策略的优化，以提高计算资源的利用率和系统性能。
+
+​		数据分布方式的创新，以提高数据的存储和访问效率。
+
+​		通信机制的改进，以提高通信速度和减少通信开销。
+
+## 立项依据/技术路线
+---
+### 1. Ray
+#### 1.1 Ray分布式计算框架
+
+Ray是UC Berkeley RISELab推出的高性能分布式执行框架，它使用了和传统分布式计算系统不一样的架构和对分布式计算的抽象方式，具有比Spark更优异的计算性能，是一种通用的集群计算框架，既支持模型的训练，又支持对环境的仿真或与环境的交互。
+
+​	按照官方文档的说法：
+
+​		Ray provides a simple, universal API for building distributed applications.	
+​	它主要有以下的特点：
+
+​	提供一种能够构建、运行分布式应用程序的simple primitives；
+​	从单机扩展到平行，几乎不需要改代码；
+​	拥有良好的生态，能够在core Ray上构建复杂的应用程序。
+
+​Ray作为一个灵活的，可伸缩的，并带有用于测试、部署和监视的分布式计算引擎，可以更方便、更高效的支撑数据处理、数据分析、实时流计算以及ML/DL/RL的模型服务，分布式训练，超参数调整等等功能。
+
+
+Ray 框架可以应用于大数据处理、机器学习、强化学习、自然语言处理等领域的分布式计算任务：
++ 大数据处理。Ray框架可以与其他大数据处理框架（如Hadoop、Spark）集成，提高数据处理的效率和可靠性。Ray框架可以通过分布式对象存储（如Amazon S3、Google Cloud Storage）实现数据的高效存储和访问。
++ 机器学习。Ray框架可以提供高效的分布式计算与深度学习框架（如TensorFlow、PyTorch）的集成，从而加速模型训练和推理。Ray框架可以提供模型并行化、数据并行化和超参数搜索等功能。
+3）强化学习。Ray框架可以提供高效的强化学习框架（如RLlib），从而加快强化学习模型的训练和评估。Ray框架可以提供高效的并行化、分布式经验回放和分布式优化器等功能。
++ 自然语言处理。Ray框架可以提供高效的自然语言处理框架（如Hugging Face Transformers），从而加快模型的训练和推理。
+总之，Ray框架具有广泛的应用场景，可以用于各种类型的分布式计算任务，从而加速任务的执行速度，提高计算效率和可靠性，降低计算成本。
+
+Ray 框架在各种应用场景中具有以下优势：
++ 高效的分布式计算。Ray框架支持高效的分布式计算，可以轻松地扩展计算资源，提高任务的执
+行速度和计算效率。
++ 灵活的任务调度。Ray框架提供灵活的任务调度机制，可以根据任务类型和计算资源的状态动态调整任务的执行顺序和分配策略，从而实现计算资源利用率的最大化。
+3）高可靠性和容错性。Ray框架提供高可靠性和容错性机制，可以自动处理资源计算故障和任务异
+常，保证任务的正确执行和计算结果的可靠性。
++ 易用的编程接口。Ray框架提供简单易用的编程接口，支持多种编程语言（如Python、Java、
+C++等），可以使开发人员轻松编写分布式计算任务。
++ 高度可扩展性。Ray框架具有高度可扩展性，可以与其他分布式计算框架（如Hadoop、Spark、Kubernetes 等）集成，提供更加完整和强大的分布式计算能力。
+总之，Ray框架在各种应用场景中都具有高效、可靠、灵活和易用的优势，可以帮助用户更加轻松地完成分布式计算任务，获得更好的计算性能和效率
+
+#### 1.2 Ray编程模型
+
+**Ray编程模型**是指Ray框架基于任务和行动器这两个重要需求所向用户提供的一套API及其编程范式。下表展示了Ray提供的核心API。
+![alt text](68ff6d4508b68957e691c4202191f9e.png)
+
+任务是指在无状态的工作器中执行的远程函数。远程函数被调用时会立即返回一个future对象，而真正的返回值可以通过ray.get(<future对象>)的方式来获取。**这样的编程模型既允许用户编写并行计算代码，同时又提醒用户要关注数据之间的依赖性。**
+
+#### 1.3 Ray计算模型
+
+* Ray产生的背景:由于AI和大数据的快速发展，对于应用和硬件能力的要求提出了更高的挑战。
+
+* Ray的特点:分布式异步调用,内存调度,Pandas/Numpy的分布式支持,支持python,整体性能出众
+
+* 基本的软件框架
+
+  Ray的架构由应用层和系统层组成，其中应用层实现了Ray的API,作为前端供用户使用，而系统层则作为后端来保障Ray的高扩展性和容错性，整体框架如下
+
+![img](https://pic2.zhimg.com/80/v2-689ccf19063644dc49b077914b8d5b41_1440w.webp)
+
+GCS 作为集中的服务端，是 Worker 之间传递消息的纽带。每个 Server 都有一个共用的 Object Store，也就是用 Apache Arrow/Plasma 构建的内存数据。 Local Scheduler 是 Server 内部的调度（单机调度），同时通过 GCS 来和其他 Server 上的 Worker 通信。Object Store 之间也有通信，作用是传递 Worker 之间的数据。
+
+Local Scheduler，即Raylet，本地调度核心
+
+**调度过程：任务创建后，首先向本地调度器提交任务，大多数情况下任务将在本地被调度。若没有资源，局部调度器会向全局调度器传递任务，向GCS传递任务信息，然后全局调度器会选择等待时间最短的、有足够资源的节点来执行任务**
+
+![img](https://pic1.zhimg.com/80/v2-2580040deb0f1524fd3905919b271cd4_1440w.webp)
+
+任务定义、提交、远程提交过程:0.定义远程函数1.提交任务2.提交任务到全局3.检查对象表4.执行全局调度5.检查任务输入6.查询缺失输入7.对象复制8.执行局部调度9.访问对象存储器
+
+获取任务执行结果过程:
+1.调教get请求
+2.注册回调函数
+3.任务执行完毕
+4.将对象同步到GCS
+5.出发回调函数
+6.执行回调函数
+7.返回用户程序
+
+#### 1.4 分布式调度器
+Ray中的任务调度器被分为两层，由一个全局调度器和每个节点各自的局部调度器组成。为了避免全局调度器负载过重，在节点创建的任务首先被提交到局部调度器，如果该节点没有过载且节点资源能够满足任务的需求（如GPU的需求），则任务将在本地被调度，否则任务才会被传递到全局调度器，考虑将任务调度到远端。由于Ray首先考虑在本地调度，本地不满足要求才考虑在远端调用，因此这样的调度方式也被称为自底向上的调度。
+
+下图展示了Ray的调度过程，箭头的粗细表示过程发生频率的高低。用户进程和工作器向本地调度器提交任务，大多数情况下，任务将在本地被调度。少数情况下，局部调度器会向全局调度器提交任务，并向GCS传递任务的相关信息，将任务涉及的对象和函数存入全局的对象表和函数表中，然后全局调度器会从GCS中读取到信息，并选择在其他合适的节点上调度这一任务。更具体地来说，全局调度器会根据任务的请求选出具有足够资源的一系列节点，并在这些节点中选出等待时间最短的一个节点。
+
+![img](https://pic1.zhimg.com/80/v2-b047e880cf58ec9c6670778b84fd5910_1440w.webp)
+
+#### 1.5 分布式对象存储器
+Ray实现了一个内存式的分布式存储系统来存储每个任务的输入和输出。Ray通过内存共享机制在每个节点上实现了一个对象存储器 (Object Store)，从而使在同一个节点运行的任务之间不需要拷贝就可以共享数据。当一个任务的输入不在本地时，则会在执行之前将它的输入复制到本地的对象存储器中。同样地，任务总会将输出写入到本地的对象存储器中。这样的复制机制可以减少任务的执行时间，因为任务永远只会从本地对象存储器中读取数据（否则任务不会被调度），并且消除了热数据可能带来的潜在的瓶颈。
+
+#### 1.6 Ray框架相比Spark的优/缺点
+优势：
++ 最小集群配置
++ 最适合计算繁重的工作负载。已经表明Ray 优于 Spark 和 Dask在某些机器学习任务上，如 NLP、文本规范化等。最重要的是，Ray 的工作速度似乎比 Python 标准多处理快 10%，即使在单个节点上也是如此。
++ 独特的基于参与者的抽象，其中多个任务可以异步地在同一个集群上工作，从而提高利用率（相比之下，Spark 的计算模型不太灵活，基于并行任务的同步执行）。
+
+缺点：
++ 相对较新（2017 年 5 月首次发布）
++ 并不是真正适合分布式数据处理。Ray 没有用于分区数据的内置原语，如果任务以数据为中心并且更多地围绕 ETL/预处理，还是需要 Spark的。对于模型并行训练，加速 Python 代码运行，强化学习等，可以选择Ray，通过Ray也可以将Spark组织起来，实现端到端的模型训练。
+
+### 2. Deepspeed ZERO
+
+DeepSpeed 是一个由 Microsoft 开发的深度学习开源优化工具，它横跨模型训练、推理和模型压缩等领域。
+零冗余优化器 Zero Redundancy Optimizer (ZeRO) 是 DeepSpeed 提供的训练优化的核心，它是一套减少分布式模型训练所需内存量的技术。
+数据并行将模型复制多份至各个 GPU 设备上，但显然这个复制模型的过程将产生较大的显存冗余，为了解决这个问题，有效地降低冗余，可以采用 ZeRO-DP 来取代 DP：ZeRO-DP 通过以下方式解决这种冗余问题：
++ Partitioning optimizer state  （分割优化器状态）
++ Partitioning gradients （划分梯度）
++ Partitioning model parameters （分割模型参数）
+deepSpeed 设置了三种 stage，包括以上三种解决方案的组合供用户选择。
+
+#### 2.1 ZERO的三个级别
+
+ZeRO 有三个不同级别，分别对应对 Model States 不同程度的分割 (Paritition)：
+- ZeRO-1：分割Optimizer States；
+- ZeRO-2：分割Optimizer States与Gradients；
+- ZeRO-3：分割Optimizer States、Gradients与Parameters
+![img](https://pic3.zhimg.com/v2-c797d5e02ebfb69757bb8936031793f6_b.jpg)
+##### 2.1.1 ZeRO-1：
+假设我们有N个并行的进程，ZeRO-1 会将完整优化器的状态等分成N份并储存在各个进程中。当Backward完成之后，每个进程的Optimizer: - 对自己储存的Optimizer States（包括Momentum、Variance 与 FP32 Master Parameters）进行计算与更新。 - 更新过后的Partitioned FP32 Master Parameters会通过All-gather传回到各个进程中。 - 完成一次完整的参数更新。
+通过 ZeRO-1 对Optimizer States的分段化储存，7.5B 参数量的模型内存占用将由原始数据并行下的 120GB 缩减到 31.4GB。
+##### 2.1.2 ZERO-2
+ZeRO-1将Optimizer States分小段储存在了多个进程中，所以在计算时，这一小段的Optimizer States也只需要得到进程所需的对应一小段Gradient就可以。遵循这种原理，和Optimizer States一样，ZeRO-2也将Gradient进行了切片：
+在一个Layer的Gradient都被计算出来后： - Gradient通过AllReduce进行聚合。 （类似于DDP） - 聚合后的梯度只会被某一个进程用来更新参数，因此其它进程上的这段Gradient不再被需要，可以立马释放掉。（按需保留）
+这样就在ZeRO-1的基础上实现了对Gradient的切分。
+通过 ZeRO-2 对Gradient和Optimizer States的分段化储存，7.5B 参数量的模型内存占用将由 ZeRO-1 中 31.4GB 进一步下降到 16.6GB。
+
+##### 2.1.3 ZERO-3
+当Optimizer States，Gradient都被分布式切割分段储存和更新之后，剩下的就是Model Parameter了。 ZeRO-3 通过对Optimizer States，Gradient和Model Parameter三方面的分割，从而使所有进程共同协作，只储存一份完整 Model States。其核心思路就是精细化通讯，按照计算需求做到参数的收集和释放。
+
+### 3. 零拷贝技术
+Ray 的独特功能之一是它的主内存对象存储 Plasma，它使用共享内存在 Ray 集群中每台机器上的进程之间传递对象。Ray 使用 Plasma 来实现 NumPy 数组的零拷贝传输。如果 Ray 任务需要从 Plasma 读取 NumPy 数组，则该任务可以直接从共享内存中访问该数组的数据，而无需将任何数据复制到其本地堆中。
+
+如果我们将模型的权重作为 NumPy 数组存储在 Plasma 上，我们可以直接从 Plasma 的共享内存段中访问这些权重，而无需进行任何复制。
+
+但是我们仍然需要将这些权重连接到 PyTorch 模型的其余部分，这需要将它们包装在 PyTorch Tensor 对象中。创建张量的标准方法包括复制张量的内容，但 PyTorch 也有一个替代代码路径，用于在不执行复制的情况下初始化Tensor。您可以通过将 NumPy 数组传递给 torch.as_tensor() 而不是使用 Tensor.__new__() 来访问此代码路径。
+
+考虑到所有这些背景信息，这里是如何从 Plasma 进行零拷贝模型加载的高级概述。首先，您需要将模型加载到 Plasma 对象存储中，这是一个三步过程：
+
+从磁盘加载模型。
+将原始 PyTorch 模型分为权重和操作图，并将权重转换为 NumPy 数组。
+将 NumPy 数组和模型（减去权重）上传到 Plasma。
+一旦模型及其权重在对象存储中，就可以对模型进行零拷贝加载。以下是要遵循的步骤：
+
+从 Plasma 反序列化模型（减去权重）
+从 Plasma 中提取权重（不复制数据）
+将权重包裹在 PyTorch 张量中（无需复制）
+将权重张量安装回重建的模型中（无需复制）
+
+
+## 前瞻性/重要性分析
+---
+### 1. 大模型的未来发展
+#### 1.1. 处理复杂任务的需求增加
+随着人工智能应用场景的不断扩展，对模型处理更复杂任务的需求也将不断增加。这些任务可能涉及自然语言处理、计算机视觉、语音识别等领域，需要更大规模、更复杂的模型来处理。
+![alt text](b365ff835a3e30e7f9f4a4429b718fe.jpg)
+#### 1.2. 处理大规模数据集的需求增加
+随着数据的爆炸式增长，处理大规模数据集的需求也将不断增加。例如，在自然语言处理领域，随着互联网上的文本数据不断增加，训练模型需要更大规模的数据集来提高性能。 
+![alt text](bb8a162ad51939bf19b682dd0649a04.jpg)
+#### 1.3. 快速迭代和部署的需求增加
+随着人工智能技术的快速发展，快速迭代和部署模型的需求也将不断增加。这意味着需要能够快速训练和部署大规模模型的技术和平台。
+#### 1.4. 对分布式训练的需求
+分布式训练的需求主要集中在处理大规模数据集、加速模型训练、提高模型性能、处理复杂任务、支持实时训练和推理等方面。这些需求将推动分布式训练技术和平台的不断发展和创新，以满足不断增长的应用需求。
+![alt text](9dc7ccbb4d97caf7518f20d9375de01.jpg)
+### 2. Ray
+#### 2.1. 从MR到Spark到Ray
+（1） MR自身是一个分布式计算框架，可以依附于它把代码分布式跑起来。不同部分可以分布在不同的进程中执行。为了能够分布式执行，他制定了非常多的规范和接口，但是编写时不同于正常的单机程序。
+（2） Spark在此基础上，除了性能提升以外，最大的优势是，让程序的编写更接近于单机程序，同时，Spark创造性的引入Python的支持，能让用户用Python去写这些程序，并且保证和写scala的模式完全一致，所以，Spark是使得分布式程序看起来更像单机程序的始作俑者，而且还提供了非常多的好用的API，比如DataFrame,SQL等等。
+（3） Ray吸取了Spark的诸多优点，首先，对于Python，Ray的安装部署全部采用Python生态。可以直接用pip 安装ray,接着就可以用ray这个命令部署集群跑在K8s/Yarn或者多个主机上，也可以直接使用python引入ray API进行编程。易用性再次提高一大截。其次，作为分布式应用，他除了能够把python函数发到任意N台机器上执行，还提供了Actor(类)的机制，让定义的类也可以发到任意N台机器上执行。
+#### 2.2. Ray的定位
+到目前为止，Ray 的定位就是一款面向 AI 的新一代 AI 计算框架，同时也是一款通用分布式计算框架。以下是Ray和云原生方式的差别图
+![alt text](a8ee7912fcef03eb104970d5d22829f.jpg)
+通过上面的例子，可以看出 Ray 对于整个计算任务有很强的优化，无论是从效率还是功能上，都远远超过传统的云原生计算方式。
+#### 2.3 Ray 的开源生态与案例
+![alt text](35b0b0c6ed3585ca15c9a1cd536dcc8.jpg)
+上图就是 Ray 支持的 AI 生态的全景图，几乎涵盖了市面上所有主流框架，也就是说，在 Ray 里面可以很方便的上面这些框架做集成。
+#### 2.4 Ray的应用趋势
+（1）Ray 在分布式机器学习和深度学习方面具有广泛的应用。它能够以高效的方式将计算任务分布到多台机器上，从而加速模型训练过程。当前趋势是将 Ray 与流行的深度学习框架（如 TensorFlow、PyTorch 等）结合使用，以构建分布式的深度学习训练系统。
+（2）超参数优化是深度学习模型调优过程中的重要步骤，而分布式超参数优化可以大大加速这一过程。Ray 提供了分布式任务调度和资源管理功能，使其非常适合用于分布式超参数优化。当前趋势是将 Ray 与超参数优化库（如 Hyperopt、Optuna 等）结合使用，以构建高效的分布式超参数优化系统。
+（3）除了机器学习和深度学习之外，Ray 也可以用于分布式数据处理和分析。它提供了丰富的数据处理和通信机制，可以高效地处理大规模数据集。当前趋势是将 Ray 与数据处理和分析工具（如 Pandas、Dask 等）结合使用，以构建高效的分布式数据处理和分析系统。
+<br>
+当前，Ray作为分布式框架已经在数据处理和模型训练中有了非常广泛的应用，未来，随着模型的不断扩大，它也一定能起到更大的作用
+
+## 相关工作
+---
+### 利用Ray进行AI训练：[1]
+
+![img](https://image.jiqizhixin.com/uploads/editor/294d9c19-ee5d-4189-b54c-5fa8294754af/1692239201687.png)
+
+上图就是 Ray 支持的 AI 生态的全景图，几乎涵盖了市面上所有主流框架，也就是说，在 Ray 里面可以很方便的上面这些框架做集成。
+
+通过这些框架集成，Ray 也可以将整个AI pipeline执行过程串联成以下四个大步骤：
+
+![img](https://image.jiqizhixin.com/uploads/editor/74fba917-93bf-4565-9f71-aa34f5a4014a/1692239201754.png)
+
+Data -> train -> tune -> serve，这四步涵盖了所有分布式训练的主要功能：
+
+1. 数据预处理。
+2. 深度学习。
+3. 深度调优。
+4. 在线推理。
+
+在 Ray 中，你可以通过短短百行代码完成以上所有步骤。
+
+### 利用Ray进行大模型训练
+
+近年来随着大模型训练的流行，Ray也理所应当的称为了开源大模型训练首要选择
+
+在开源大模型训练方面，也有许多大型项目在使用 Ray：
+
+![img](https://image.jiqizhixin.com/uploads/editor/2620c91d-ec0b-4329-bb6c-942efa01d4bc/1692239201801.png)
+
+在企业级应用方面，大家最耳熟能详的应该就是 ChatGPT-4了：
+
+![img](https://image.jiqizhixin.com/uploads/editor/1b87ad83-7927-42a8-ac8b-28a1f8b1742e/1692239201845.png)
+
+除了 OpenAI 之外，还有许多来自全球各地的公司在深度使用 Ray：
+
+![img](https://image.jiqizhixin.com/uploads/editor/0985ed5e-1e4c-4a23-a72d-c2dfa67dcd5a/1692239201893.png)
+
+### 更深一步：利用Ray和其他工具实现模型训练优化
+
+**Ray + ZeRO **
+
+ChatGPT 已经问世一年+了，在训练 ChatGPT 中必不可少的一环是 RLHF 训练，目前开源社区已经有了不少 RLHF 训练框架比如，TRL, DeepSpeedChat 或者最近热门的 LLaMA Factory。这些框架往往是基于 ZeRO 等并行方式，将 RLHF 算法中的四个模型切片后放到同一个 GPU 上。
+
+将ZeRO和Ray结合起来可以为训练超大规模模型提供更强大的分布式计算和资源管理能力。具体来说，可以采取以下方式将它们结合起来：
+
+1. 分布式训练管理： 使用Ray作为分布式训练的管理器，负责任务调度、资源分配和监控。ZeRO则用于管理模型的分布式并行计算和参数更新，以最大程度地减少内存占用和通信开销。
+2. 资源优化： Ray可以根据需要动态分配计算资源，并在训练过程中进行资源优化。结合ZeRO技术，可以在分布式环境中高效地管理GPU内存和通信资源，使得训练过程更加高效稳定。
+3. 任务并行化： Ray可以将训练任务并行化到多个计算节点上执行，每个节点上使用ZeRO技术来实现模型并行。这样可以加速训练过程，并处理更大规模的数据集和模型。
+4. 数据分发和通信优化： Ray可以帮助优化数据分发和通信过程，以最小化数据传输和模型更新的通信开销。与ZeRO技术结合使用，可以更有效地利用带宽和通信资源。
+
+综上所述，将ZeRO和Ray结合起来可以充分发挥它们各自的优势，为训练超大规模模型提供强大的分布式计算和资源管理支持，加速训练过程并提高效率。
+
+**Ray + vLLM 方案架构**[2]
+
+在[OpenRLHF](https://github.com/OpenLLMAI/OpenRLHF/tree/main)项目中，作者基于 Ray 和 vLLM 重新设计了模型调度方案：
+
+1. 对于 7B 这种小模型，作者将所有模型放到同一张GPU上
+2. 对于 13B~34B 的中等模型，作者基于 Ray 将 PPO 中的四个模型放到不同的GPU上实现全量微调
+3. 对于 34B+的大模型，作者用 vLLM 的 TP 并行加载 Actor 模型，其他模型仍然用 Ray 的方式分散在不同的GPU上
+
+但是对于 34B+ 的模型我们发现即使用 Ray 把模型放到不同的卡上也没有办法放得下去
+
+所以作者想到对于 Actor 推理模块我们基于 vLLM 的 TP 并行和 Dynamic Batching 能力做了分布式推理的优化，然后其他模块（即 Actor/Critic的训练模块和Reward/RefActor的推理模块）因为只参一次 forward 或者 backward 作者采用 ZeRO3 的方式进行并行训练。架构图如下：
+
+![img](https://pic1.zhimg.com/80/v2-facb9fb6a9437f45e2026827bdc07d2c_720w.webp)
+
+每次 PPO 训练，vLLM 推理引擎都会收到 DeepSpeed ZeRO3 训练框架更新后的权重，作者通过 NVIDIA NCCL 高性能通信实现了这个过程。鉴于 vLLM 的高性能推理能力，作者实现的不错的性能收益。更进一步，作者可以融合 Actor 的训练节点和推理节点实现节点复用来避免 GPU 空闲，因为这两个模块并不会同时工作。
+
+至此作者通过 Ray 和 vLLM 实现了 70B+ 模型的 RLHF训练方案，并且我们的方案是无缝兼容 Huggingface Transformers 库的，无需像 Megatron-LM 一样手动修改模型结构。
+
+**使用 Alpa 和 Ray 在大型 GPU 集群中高效扩展 LLM 训练**[3]
+
+Alpa 和 Ray 的核心都是为了提高开发人员的速度和有效地扩展模型。 Alpa 框架的流水线并行功能可以轻松地在多个 GPU 上并行化大型模型的计算，并减轻开发人员的认知负担。 Ray 提供了一个分布式计算框架，可以简化跨多台机器的资源扩展和管理。
+
+当 Alpa 和 Ray 一起使用时，它们提供了一个可扩展且高效的解决方案，可以在大型 GPU 集群中训练 LLM 。通过这种集成，基准测试显示了以下好处：
+
+1. 对于 1750 亿参数规模的 LLM ， Alpa on Ray 可以扩展到 1000 GPU 以上。
+2. 所有 LLM 并行化和分区都是通过一行装饰器自动执行的。
+
+结合 Alpa 和 Ray OSS 框架，开发人员可以在 JAX 上的大型集群中高效地扩展 LLM 培训。使用 Alpa 自动编译您的网络体系结构，并使用 Ray 在机器集群中协调和运行任务。
+
+![Benchmark results show that Alpa on Ray scales linearly with the number of GPUs, from 128 GPUs to 1024 GPUs ](https://developer-blogs.nvidia.com/wp-content/uploads/2023/05/benchmark-results-training-throughput-alpa-ray.png)
+
+## 参考文献
 ---
 
-**时代背景：**  随着深度学习模型的发展和应用场景的增多，模型变得越来越大，对计算资源的需求也越来越高，特别是对显存的需求。虽然GPU的性能在不断提升，但显存的发展速度却相对较慢，导致在处理大型模型时出现了显存不足的情况。
+[1] [Ray: 大模型时代的AI计算基础设施 | 机器之心 (jiqizhixin.com)](https://www.jiqizhixin.com/articles/2023-08-17-6)
 
-<img src="./MARKDOWN.asset/0.png" alt="Alt pic" style="zoom: 33%;" /> 
+[2] [开启训练之旅: 基于Ray和vLLM构建70B+模型的开源RLHF全量训练框架 - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/678828949)
 
-​	InceptionV4设置batch size为32训练 ImageNet需要 40GB显存空间； 
+[3] https://developer.nvidia.com/zh-cn/blog/efficiently-scale-llm-training-across-a-large-gpu-cluster-with-alpa-and-ray/
 
-​	BERT拥有768个隐藏层，在Batch size设 置为64时需要73GB的显存空间；
+[4] ZeRO: Memory Optimizations Toward Training Trillion Parameter Models
+Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, Yuxiong He
 
-​	使用ImageNet训练Wide ResNet-152，并 设置Batch size为64需要显存180GB
+[5] Systems for Parallel and Distributed Large-Model Deep Learning Training
+Kabir Nagrecha
 
- <img src="./MARKDOWN.asset/1.png" alt="Alt pic" style="zoom: 33%;" />
+[6] [Easier Model Serving with zerocopy](https://medium.com/ibm-data-ai/easier-model-serving-with-zerocopy-3930d1d2a1af)
 
-​	有数据表明深度学习模型（例如GPT-3）这种模型动不动就上百GB，而一个最好的GPU（A100）目前也才80GB的显存容量。解决显存不足已经是人工智能领域的一个重要挑战。一开始，我们可能会尝试让现有的GPU能够训练更大的模型，这可以通过优化算法、减少模型大小等方式来实现。随着技术的进步，我们还可以探索如何更好地利用有限的资源，例如通过更有效的内存管理、数据压缩等技术来提高训练速度和效率。
+[7] [How to Load PyTorch Models 340 Times Faster with Ray](https://link.zhihu.com/?target=https%3A//medium.com/ibm-data-ai/how-to-load-pytorch-models-340-times-faster-with-ray-8be751a6944c)
 
-**现状与前景：** 
+[8] Ray: A Distributed Framework for Emerging AI Applications
+ Philipp Moritz, Robert Nishihara, Stephanie Wang, Alexey Tumanov,  
+Richard Liaw, Eric Liang, Melih Elibol, Zongheng Yang, William Paul,  
+Michael I. Jordan, and Ion Stoica, UC Berkeley
 
-​	从2016年发表在MICRO16（体系结构A会）上的vDNN，借助大得多的CPU内存，把训练当前阶段不需要的数据转移到CPU上，借助CPU上的大内存暂存数据，从而减少对显存的需求。
+[9] A Study of a Scalable Distributed Stream Processing Infrastructure Using Ray and Apache Kafka Kasumi Kato; Atsuko Takefusa; Hidemoto Nakada; Masato Oguchi
 
-<img src="./MARKDOWN.asset/2.png" alt="Alt pic" style="zoom: 33%;" />
-
-​	到后来重计算和压缩、量化、剪枝技术的不断发展， GPU显存的优化不断深化发展，有了长足进步。
-
-<img src="./MARKDOWN.asset/3.png" alt="Alt pic" style="zoom: 33%;" />
-
-​	到如今，这个领域已经白热化了，随着工作越做越细致，再提出新的解决思路已经比较困难了。然而，随着人工智能模型的发展，目前的GPU显存需求仍然迫切，针对显存优化，AI+System的未来还是有很长的路要走。
-
-
-### 立项依据/技术路线
----
-#### 1. 后向重计算
-
-**后向重计算的工作原理**
-后向重计算是一种在反向传播过程中节省显存的技术。在传统的反向传播算法中，我们需要存储每一层的中间结果（梯度），以便在后续层中计算梯度。然而，这些中间结果会占用大量的显存。后向重计算通过重新计算这些中间结果来避免存储它们，从而降低了显存占用。
-
-具体来说，在后向重计算中，我们在反向传播过程中不直接存储中间结果，而是在需要时重新计算它们。这样，我们只需要存储当前层的梯度，而不需要存储所有层的梯度。因此，后向重计算可以以时间换空间的方式降低显存占用。
-
-在OneFlow中实现后向重计算
-OneFlow是一个开源的深度学习框架，它提供了丰富的显存优化技术，包括后向重计算。下面，我们将通过一个简单的示例来展示如何在OneFlow中实现后向重计算。
-
-在训练过程中，我们需要使用flow.enable_grad()和flow.enable_recompute()来启用梯度计算和后向重计算。例如，在一个训练循环中：
-```
-for epoch in range(num_epochs):
-    for data, target in dataloader:
-        optimizer.zero_grad()
-        with flow.enable_grad(), flow.enable_recompute():
-            output = model(data)
-            loss = criterion(output, target)
-        loss.backward()
-        optimizer.step()
-```
-在这个例子中，flow.enable_recompute()告诉OneFlow在反向传播过程中使用后向重计算。这样，我们就可以在保持计算效率的同时，大幅降低显存占用。
-
-总结
-后向重计算是一种有效的显存优化技术，它通过重新计算中间结果来避免存储它们，从而降低了显存占用。在OneFlow框架中，我们可以使用flow.enable_recompute()来启用后向重计算。通过以时间换空间的方式，我们可以在处理大规模数据和复杂模型时，显著提高显存利用率，提升计算效率。
-
-#### 2. ZeRO-Offload策略
-   ZeRO-Offload并不希望为了最小化显存占用而让系统的计算效率下降，但是将部分GPU的计算和存储下放到CPU和内存，必然涉及CPU和GPU之间的通信增加，使通信成为瓶颈，此外GPU的计算效率相比于CPU也是数量级上的优势，也不能让CPU参与过多计算，避免成为系统瓶颈，只有前两条满足的前提下，再考虑最小化显存的占用。
-
-为了找到最优的offload策略，可将模型训练过程看作数据流图（data-flow graph）：
-
-
-圆形节点表示模型状态，比如参数、梯度和优化器状态
-矩形节点表示计算操作，比如前向计算、后向计算和参数更新
-边表示数据流向
-下图是某一层的一次迭代过程（iteration/step），使用了混合精读训练，前向计算（FWD）需要用到上一次的激活值（activation）和本层的参数（parameter），反向传播（BWD）也需要用到激活值和参数计算梯度，
-
-![img](https://pic2.zhimg.com/80/v2-80215e2003776eea0a82831e24aabb05_1440w.webp)
-如果用Adam优化器进行参数更新（Param update），流程如下：
-
-![img](https://pic1.zhimg.com/80/v2-b7052a7c180395b94d7be6a23b00df1c_1440w.webp)
-下面为边添加权重，物理含义是数据量大小（单位是字节），假设模型参数量是 
- ，在混合精度训练的前提下，边的权重要么是2M（fp16），要么是4M（fp32），
-
-
-
-
-现在要做的就是沿着边把数据流图切分为两部分，分布对应GPU和CPU，计算节点（矩形节点）落在哪个设备，哪个设备就执行计算，数据节点（圆形）落在哪个设备，哪个设备就负责存储，将被切分的边权重加起来，就是CPU和GPU的通信数据量。
-
-
-
-ZeRO-Offload的切分思路是：
-
-图中有四个计算类节点：FWD、BWD、Param update和float2half。为了不降低计算效率，将前两个节点放在GPU，后两个节点不但计算量小还需要和Adam状态打交道，所以放在CPU上，Adam状态自然也放在内存中，为了简化数据图，将前两个节点融合成一个节点FWD-BWD Super Node，将后两个节点融合成一个节点Update Super Node。如下图右边所示，沿着gradient 16和parameter 16两条边切分。
-
-
-现在的计算流程是，在GPU上面进行前向和后向计算，将梯度传给CPU，进行参数更新，再将更新后的参数传给GPU。为了提高效率，可以将计算和通信并行起来，GPU在反向传播阶段，可以待梯度值填满bucket后，一遍计算新的梯度一遍将bucket传输给CPU，当反向传播结束，CPU基本上已经有最新的梯度值了，同样的，CPU在参数更新时也同步将已经计算好的参数传给GPU，如下图所示。
-
-![img](https://pic4.zhimg.com/80/v2-b9f59b045c1629983fb3e94e692bc457_1440w.webp)
-
-以下为采用ZeRO-offload后的优化效果：
-![img](https://pic1.zhimg.com/v2-fe50a06119ca19954e6fee767cafb028_r.jpg)
-
-
-### 前瞻性/重要性分析
----
-
-
-#### 1.增长的计算需求
-随着人工智能、大数据分析、科学计算等领域的发展，对计算资源的需求不断增长。未来 GPU 需要处理更大规模、更复杂的计算任务，这将对显存的需求提出更高的要求。
-<img src="./MARKDOWN.asset/04.png" alt="Alt pic" style="zoom: 33%;" /> 
-具体有以下表现：
-##### （1） 更大规模的数据处理
-随着数据量的不断增加，特别是在大数据分析、机器学习、深度学习等领域，未来 GPU 需要处理更大规模的数据，需要更大容量的显存来存储数据和中间计算结果。
-##### （2） 更复杂的计算任务：
-未来 GPU 需要处理更加复杂和多样化的计算任务，包括模型训练、推理、图像处理、语音识别等各种计算任务。这些任务可能需要更多的显存来存储模型参数、中间计算结果等数据。
-##### （3）更高的性能需求：
-随着计算任务的不断增加和复杂化，未来 GPU 需要提供更高的性能来满足用户的需求。这包括更快的计算速度、更高的吞吐量、更低的延迟等方面。
-##### （4）多任务并行处理：
-未来 GPU 需要支持更多的并行计算任务，包括多个任务同时进行、多个任务之间的数据共享等。需要更有效地管理显存资源以支持多任务并行处理。
-
-#### 2.新型应用场景：
-随着人工智能、虚拟现实、增强现实等新型应用场景的不断涌现，对显存的需求也在不断变化。未来 GPU 需要适应更多样化的应用需求，需要在显存管理方面进行更多的优化，以下为几个例子。
-
-##### （1）人工智能：
-人工智能涵盖了机器学习、深度学习、自然语言处理、计算机视觉等各个方面。在这些领域中，GPU 被广泛应用于训练和推理深度神经网络模型。新的模型和算法不断涌现，需要更大规模、更复杂的计算和数据处理。例如大语言模型ChatGPT，需要大量的显存来存储模型参数和中间计算结果。
-<img src="./MARKDOWN.asset/05.png" alt="Alt pic" style="zoom: 33%;" /> 
-
-##### （2）虚拟现实：
-虚拟现实技术通过模拟人类的感官体验，让用户沉浸在虚拟的三维环境中。在虚拟现实中，GPU 负责渲染图形、处理交互事件等任务。随着虚拟现实技术的不断进步，新的 VR 应用场景不断涌现，如虚拟会议、虚拟旅游、虚拟培训等。需要更快的图形渲染速度和更大的显存容量。
-<img src="./MARKDOWN.asset/06.png" alt="Alt pic" style="zoom: 33%;" /> 
-
-##### （3）增强现实：
-增强现实技术通过将虚拟元素叠加到现实世界中，扩展人类的感知和交互能力。在增强现实中，GPU 负责识别现实世界中的场景、跟踪物体的位置、渲染虚拟元素等任务。随着增强现实技术的不断发展，新的 AR 应用场景不断涌现，如增强现实导航、增强现实游戏、增强现实演艺等。需要更复杂的算法和更高效的显存使用方式。
-
-#### 3.智能化显存管理：
-未来显存管理可能更加智能化，包括动态分配、内存压缩、数据重用等技术的应用。通过智能化显存管理，可以更好地适应不同的计算任务和应用场景，提高显存的利用率和性能。
-<img src="./MARKDOWN.asset/07.png" alt="Alt pic" style="zoom: 33%;" /> 
-
-##### （1）动态分配：
-智能化显存管理可以根据系统的实时需求，动态分配显存资源给不同的计算任务。通过监测系统的负载情况和内存使用情况，智能化管理系统可以调整显存分配策略，确保每个任务都能获得适当的显存资源，从而最大程度地提高系统的整体性能。
-
-##### （2）内存压缩：
-智能化显存管理可以利用数据压缩技术来减少显存的占用量。通过识别和压缩内存中的重复数据、冗余数据或低频数据，可以显著减少显存的使用量，从而提高显存利用率并节省系统资源。例如，利用压缩算法对图像、模型参数等数据进行压缩，可以降低显存的空间占用，并提高系统的性能和效率。
-
-##### （3）数据重用：
-智能化显存管理可以通过数据重用技术来减少数据在内存和设备之间的传输量。通过识别和缓存经常使用的数据块或中间计算结果，可以减少数据的重复加载和传输，从而降低内存带宽消耗，提高系统的效率和性能。例如，在深度学习任务中，可以利用数据重用技术来减少模型参数的加载次数，加速模型训练和推理过程。
-
-##### （4） 智能调度：
-智能化显存管理可以通过智能调度算法来优化计算任务的执行顺序和并发度。通过分析任务之间的依赖关系和计算特性，智能化管理系统可以动态调整任务的执行顺序和并发度，以最大程度地提高系统的整体效率。例如，在多任务并行计算中，可以利用智能调度算法来平衡不同任务之间的资源竞争，避免资源浪费和性能下降。
-
-#### 4.分布式显存系统：
-未来可能会出现更多基于分布式显存系统的 GPU 架构，允许多个 GPU 之间共享显存资源。这种架构可以提高整个系统的显存利用率，并支持更大规模的计算任务。
-<img src="./MARKDOWN.asset/08.png" alt="Alt pic" style="zoom: 33%;" /> 
-
-##### （1）架构特点：
-分布式显存系统通常由多个 GPU 节点组成，每个节点都包含一个或多个 GPU 设备以及相关的处理器和存储资源。这些节点通过高速网络连接在一起，形成一个统一的计算集群。每个节点上的 GPU 设备可以通过网络访问其他节点上的显存资源，实现数据共享和协同计算。
-
-##### （2）数据共享：
-分布式显存系统通过共享显存资源来实现数据共享和协同计算。在这种系统中，数据可以存储在任何一个节点的显存中，并且可以通过网络访问到其他节点上的 GPU 设备。这种数据共享方式可以极大地扩展系统的存储容量和计算能力，从而支持更大规模、更复杂的计算任务。
-
-##### （3）任务调度：
-在分布式显存系统中，任务调度是一个关键问题。由于多个 GPU 设备共享同一份数据，因此需要合理地调度计算任务，以最大程度地利用系统资源并确保任务的正确执行顺序。通常采用分布式调度算法来实现任务的分配和调度，以确保任务的负载均衡和系统的整体性能。
-
-##### （4）应用场景：
-分布式显存系统适用于需要大规模数据处理和并行计算的应用场景，如深度学习训练、大规模数据分析、科学计算等。这些应用通常需要大量的计算资源和存储资源，分布式显存系统可以提供更大的计算和存储能力，并且支持更复杂的计算任务和算法。
-
-#### 5.软硬件协同优化
-未来的显存优化将更多地涉及到软硬件协同设计。硬件厂商和软件开发者将密切合作，通过优化算法、编译器、驱动程序等多个层面来提高显存利用率和性能。软硬件协同优化可以充分发挥硬件的潜力，实现更高效的显存管理和计算处理。
-<img src="./MARKDOWN.asset/09.png" alt="Alt pic" style="zoom: 33%;" /> 有以下几个方面
-
-##### （1）内存访问模式优化：
-软件开发人员可以通过优化算法和数据结构来改进内存访问模式，以最大程度地利用 GPU 的内存层次结构和并行计算能力。例如，通过数据局部性原则，合理地组织数据访问模式，以减少内存访问延迟和提高数据缓存命中率。
-
-##### （2）内存分配与释放策略：
-软件开发人员可以根据应用特点和系统需求，设计合适的内存分配与释放策略，以最小化内存碎片化、减少内存泄漏，并提高内存利用率。同时，需要考虑到 GPU 内存管理器的特点和限制，以避免因不当的内存操作而导致性能下降或系统崩溃。
-
-##### （3）内存数据压缩算法优化：
-硬件设计者可以设计专门的压缩引擎或硬件模块，以提供显存数据的压缩和解压功能。软件开发人员可以针对不同的应用场景和数据特点，选择合适的压缩算法，并对其进行优化，以降低数据传输带宽、减少显存占用，并提高系统的性能和效率。
-
-##### （4）内存访问控制与并发管理：
-软件开发人员可以通过合理的并发管理和内存访问控制策略，最大化利用 GPU 的并行计算能力，并避免因数据竞争而导致的性能下降或系统错误。硬件工程师可以设计支持并发访问和多线程操作的硬件结构，以提高系统的并行度和吞吐量。
-
-### 相关工作
----
-
-当今，随着深度学习的发展，模型变得越来越大，对显存的需求也越来越多，GPU的显存急需优化方案。优化GPU显存的主要目标是最大程度地减少显存的使用量，以提高程序的性能和效率。以下我将介绍GPU优化方案的发展历程与GPU优化的优秀成果。
-
-**2016年：** 
-
-​		发表在MICRO16（体系结构A会）上的vDNN[1]提出了一种方案，即在训练时，把训练当前阶段不需要的数据转移到CPU上，借助CPU上的大内存暂存数据。因为DNN模型是按照层进行排列的，每一个时刻GPU其实只训练某个层，势必会有一些层的数据我们暂时不需要访问，所以这些数据便可以转移出去。在文章中，作者对CV模型进行测试，发现Feature map类型的数据占空间是最大的，所以重点是面向Feature map的数据进行优化。进一步，作者发现CV主要包括两个比较重要的层，卷积以及FC全连接。而这两个层中，卷积层的输入占用空间特别多，于是作者就把卷积层的Tensor在前传的时候转出到CPU里面，等到反传需要的时候再提起转回来。但是这种方案有缺点，即由于同步的影响，导致了严重的性能开销，且比较死板，先入为主的就对卷积做策略，随着未来模型的发展，这种方案势必不智能；
-
-​		之后，Tianqi Chen另辟蹊径，提出了DNN模型层的重计算思想[2]。将暂时用不到的显存释放掉，然后反传用到时再通过前传得到。虽然能释放大量显存，但是计算开销是串行的，特别大。
-
-**2018-2019年：**
-
-​		其中一部分工作主要在vDNN的方向上进行优化，代表性的工作有DATE18的MoDNN[3]、IPDPS19的vDNN++[4]。一部分工作将转移、重计算结合到一起，例如SuperNeurons[5]，它提出了一个系统级的优化框架。还有一部分工作另辟蹊径，将压缩引入DNN的显存优化，从而开辟了新的领域，如-Gist[6]、cDMA[7]。
-
-​		MoDNN是2018年发表在DATE（CCF-B）上的一篇基于转移的显存优化工作。他的核心发现是DNN框架中，卷积函数包括很多不同的类别，有的卷积函数空间使用多，但是性能较快（FFT、Winograd algorithm），有的不占用太多内存，但是性能相对较差（GEMM）。所以moDNN能够只能的选择卷积函数，并调整mini-batchsize来最优化系统的执行性能，并智能选择转移策略。vDNN++对GPU碎片问题，转移后的数据压缩问题进行了进一步优化。
-
-​		SuperNeurons是2018年比较有影响力的文章，其核心思想可以归结为下面三点，从而针对不同类别的层进行不同的策略，最终一步一步释放显存。
-
-![img](https://pic4.zhimg.com/v2-9b55923f2e094bfd5e76f22b158a1f0f_r.jpg)
-
-然而，作为早期文章，该方案同样先入为主的对当时比较主流的几个模型进行了分析，并有使用固定思维对某些层做某些事情，不够灵活。
-
-​		Gist[6]针对ReLU的输出进行有损+无损的压缩，释放了许多ReLU层相关的显存，节省了空间。cDMA[7]利用了ReLU输出层的稀疏特性，并在GPU中做了一个硬件core来压缩这些数据，以减少转移的数据量，最终提升性能。但是这种硬件的文章其实都是基于模拟器做，也无法为我们所用。并且压缩算法定制到硬件上，也比较单一，所以弊端还是很多的。
-
-**2020年：**
-
-​		在ASPLOS'20这一会议中，涌出了一批相对比较优秀的GPU显存解决工作。
-
-​		首先是SwapAdvisor[8]。这篇工作的想法比较简单，作者认为之前的基于人工判断的转移方法并不高效（例如vDNN的只对卷积转移）。所以他认为系统可以使用传统的启发式搜索方案来进行转移策略的搜索，这里选择的是遗传算法。虽然想法简单，但是作者还是经过了大量的实验测试以及对比，最终选择了遗传算法，并且针对遗传算法的流程以及DNN的流程，将转移这个操作建模出来，并且也对非线性网络的支持比较好。
-
-​		AutoTM[9]是ASPLOS'20的另一篇文章，这个文章的大背景就是使用暴力搜索（线性整数规划）来搜索出来合适的转移策略。他是第一个使用CPU的DRAM+NVM（非易失性内存）进行策略搜索的工作，并且开源了代码。不过对于搜索范围较大的或是异步运行的时候表现性能较差。
-
-​		除了上述几篇转移的工作外，本年的ASPLOS会议上还有一篇GPU显存优化的工作-Capuchin[10]，而该工作就是在SuperNeurons的基础上，做的更深更好（转移+重计算）。这篇文章解决了很多GPU显存的问题。简单来说，该工作有如下三点Motivation：
-
-<img src="https://pic2.zhimg.com/80/v2-a8b4b13cad434338e1b6c781f079484d_720w.webp" alt="img" style="zoom:80%;" />
-
-不能先入为主的对各种层做特定操作（例如就对卷积的Tensor做转移，对Pool做重计算等等），这样势必不能达到比较高效（也不能是最高效），于是这个文章先详尽一切办法把能并行的转移并行进来，然后迭代调出最优的重计算方案，直到内存容量足够为止。本文引入公式，对不同Tensor按照下面的公式计算，从而排序进行优化：
-
-![img](https://pic2.zhimg.com/80/v2-e3eaef411314a39a0d6bd330401d8c7d_720w.webp)
-
-而这个公式将Tensor按照内存保存量以及重计算的时间需要进行了权重计算，简单来说，Tensor中重计算时间越少，内存保存量越大的数据，越值得我们首先考虑。
-
-相比于之前的SuperNeurons，这个工作就无关什么层的类型，我一视同仁，只要你能并行，我就并行起来，并且选择最优的重计算方案。对比其他的仅转移方案的文章，本文引入了重计算，从而在某些情况下重计算的开销会比转移低，从而提升模型训练的性能。
-
-**2021年：**
-
-​		2021年在显存优化上出现了颇多更有意思的点，例如FlashNeuron[11]。这个论文一反常态，认为上述一堆文章都是把数据转移到CPU的DRAM上，但是那些文章都没有考虑过内存、CPU正在执行数据预处理操作，从而使得内存总线始终在忙碌，从而使得转移性能极差，转移性能随着CPU忙碌而变差。于是这个文章破天荒的将数据转移到SSD上，并利用了比较简单的转移方法，引入压缩从而进一步降低转移数据量。
-
-​		该年还有一篇显存优化的文章：Sentinel来自HPCA21[12]，他算是第二篇将NVM与DRAM结合的文章，但是他的点比较微观，抓住的是转移页的时候，生命周期不同的的数据被分配到了同一个页中，造成了大量不必要的转移。所以这个文章把这个问题解决了。并且实验对比了当前最好的一系列文章。
-
-​		再者就是ATC21的ZeRO-Offload文章[13]。这个文章发现，NLP里面有许多参数其实是为优化器所用的。与CV不同，CV是Feature map特别大，而NLP偏向parameter，而优化器内部其实是和weight的量成正比的。加上momentum以及variance大概能有3倍。所以这个文章把优化器所有参数卸载到CPU上，包括计算在内，并设计了更快的CPU优化器运算，从而做到了完美的GPU显存优化。
-
-​		然后是2021年CLUSTER21的关于DNN+压缩的优化文章-CSWAP。这个文章利用了ReLU输出数据的稀疏特性、稀疏可变特性（随着训练的进行不同层的稀疏程度是可变的），提出了选择性压缩的架构，在转移的过程中，如果数据压缩+转移性能好，那我们就压缩，否则就不压缩。为了达成这个目的，本文利用了2个机器学习模型对一些指标进行预测，从而比较准确的挑选出合适的层进行压缩+转移，其余只转移，从而在优化显存的同时，最优化训练性能。
-
-​		最后是《DeepCuts: A Deep Learning Optimization Framework for Versatile GPU Workloads》[14],目前绝大多数深度学习框架都是使用cuDNN原生高性能库对在GPU上进行的计算做加速优化。然而随着深度学习领域的快速发展，基于cuDNN的框架在GPU优化上并不总能给出最优解。因此论文作者提出了DeepCuts，一个专为解决深度学习应用中越来越多样的workloads而设计的深度学习框架。其不同于上述其他框架的两个重要创新点：1、直接使用GPU硬件参数；2、不实际评估每个参数组合的性能，而是通过估计性能上界去筛除理论计算结果较差的参数组合，缩小范围。
-
-对于一个给定的深度学习模型中的计算操作，DeepCuts会搜索产生最优性能GPU kernel的参数组合，并在搜索过程中尝试算子融合，并使用具有后端架构感知的性能估计模型对“definitely-low”的参数组合进行剪枝。基于选中的参数组合，生成数据流图并进一步生成GPU kernel。最后执行这些kernel并为每个算子或融合算子选出使其性能最优的。
-
-**总结来看，GPU显存优化的历史便在下面的表格：**
-
-| 年份 | 会议    | 题目         | 方案        | 备注                                     |
-| ---- | ------- | ------------ | ----------- | ---------------------------------------- |
-| 2016 | MICRO   | VDNN         | 转移        | 第一篇转移                               |
-| 2016 | arXiv   | Checkpoint   | 重计算      | 第一篇重计算                             |
-| 2018 | DATE    | moDNN        | 转移        | 考虑不同卷积函数的性能                   |
-| 2018 | PPoPP   | SuperNeurons | 转移+重计算 | 第一篇转移+重计算                        |
-| 2018 | HPCA    | cDMA         | 转移+压缩   | 硬件对ReLU输出层压缩                     |
-| 2019 | IPDPS   | vDNN++       | 转移+压缩   | 针对vDNN的性能问题进行解决               |
-| 2020 | ASPLOS  | AutoTM       | 转移        | NVM+DRAM的暴力搜索                       |
-| 2020 | ASPLOS  | SwapAdvisor  | 转移        | 启发式搜索+GPU碎片问题                   |
-| 2020 | ASPLOS  | Capuchin     | 转移+重计算 | 转移+重计算的较为优秀的方案              |
-| 2021 | FAST    | FlashNeuron  | 转移        | 引入SSD转移                              |
-| 2021 | ATC     | ZeRO-Offload | 转移        | 利用CPU的计算能力                        |
-| 2021 | CLUSTER | CSWAP        | 转移+压缩   | 对稀疏数据进行选择性压缩，最优化性能     |
-| 2021 | HPCA    | Sentinel     | 转移        | NVM+DRAM场景，考虑细粒度Page上的数据情况 |
-
-### 参考文献
----
-
-[1]M. Rhu, N. Gimelshein, J. Clemons, A. Zulfiqar, and S. W. Keckler, “VDNN: Virtualized deep neural networks for scalable, memory-efficient neural network design,” in *Proceedings of the Annual International Symposium on Microarchitecture, MICRO*, 2016, vol. 2016-Decem.
-
-[2] T. Chen, B. Xu, C. Zhang, and C. Guestrin, “Training Deep Nets with Sublinear Memory Cost,” pp. 1–12, 2016.
-
-[3] X. Chen, D. Z. Chen, and X. S. Hu, “MoDNN: Memory optimal DNN training on GPUs,” *Proc. 2018 Des. Autom. Test Eur. Conf. Exhib. DATE 2018*, vol. 2018-Janua, pp. 13–18, 2018.
-
-[4] S. B. Shriram, A. Garg, and P. Kulkarni, “Dynamic memory management for GPU-based training of deep neural networks,” *Proc. - 2019 IEEE 33rd Int. Parallel Distrib. Process. Symp. IPDPS 2019*, pp. 200–209, 2019.
-
-[5] L. Wang *et al.*, “SuperNeurons: Dynamic GPU memory management for training deep neural networks,” in *Proceedings of the ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming, PPOPP*, 2018, pp. 41–53.
-
-[6] A. Jain, A. Phanishayee, J. Mars, L. Tang, and G. Pekhimenko, “GIST: Efficient data encoding for deep neural network training,” *Proc. - Int. Symp. Comput. Archit.*, pp. 776–789, 2018.
-
-[7] M. Rhu, M. O’Connor, N. Chatterjee, J. Pool, Y. Kwon, and S. W. Keckler, “Compressing DMA Engine: Leveraging Activation Sparsity for Training Deep Neural Networks,” *Proc. - Int. Symp. High-Performance Comput. Archit.*, vol. 2018-Febru, pp. 78–91, 2018.
-
-[8] C. C. Huang, G. Jin, and J. Li, “SwapAdvisor: Pushing deep learning beyond the GPU memory limit via smart swapping,” in *International Conference on Architectural Support for Programming Languages and Operating Systems - ASPLOS*, 2020, pp. 1341–1355.
-
-[9]M. Hildebrand, J. Khan, S. Trika, J. Lowe-Power, and V. Akella, “AutOTM: Automatic tensor movement in heterogeneous memory systems using integer linear programming,” in *International Conference on Architectural Support for Programming Languages and Operating Systems - ASPLOS*, 2020, pp. 875–890.
-
-[10] X. Peng *et al.*, “Capuchin: Tensor-based GPU memory management for deep learning,” in *International Conference on Architectural Support for Programming Languages and Operating Systems - ASPLOS*, 2020, pp. 891–905.
-
-[11] J. Bae *et al.*, “FlashNeuron : SSD-Enabled Large-Batch Training of Very Deep Neural Networks This paper is included in the Proceedings of the 19th USENIX Conference on File and Storage Technologies .,” 2021.
-
-[12] J. Ren, J. Luo, K. Wu, M. Zhang, H. Jeon, and D. Li, “Sentinel : Efficient Tensor Migration and Allocation on Heterogeneous Memory Systems for Deep Learning,” pp. 598–611, 2021.
-
-[13] J. Ren *et al.*, “ZeRO-Offload : Democratizing Billion-Scale Model Training This paper is included in the Proceedings of the,” 2021.
-
-[14]Wookeun Jung, Thanh Tuan Dao, Jaejin Lee,"DeepCuts: A Deep Learning Optimization Framework for Versatile GPU Workloads,"PLDI, 2021.
-
-[AI-GPU显存优化领域前沿工作发展史（读博两年里程碑） - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/419019170)
-
-[DeepSpeed之ZeRO系列：将显存优化进行到底 - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/513571706)
-
-[后向重计算在OneFlow中的实现：优化显存占用，提升计算效率)](https://cloud.baidu.com/article/3275282)
+[10] Ray: A Distributed Execution Engine for the Machine Learning Ecosystem 2019 Moritz, Philipp CAdvisor(s): Jordan, Michael I;Stoica, Ion
