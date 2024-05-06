@@ -11,7 +11,7 @@ from tqdm import tqdm
 def run_llm(
     requests: List[Tuple[str, int, int]],
 ) -> float:
-    device = torch.device("cuda:7")
+    device = torch.device("cuda:6")
     model_info = "/staff/liqi/Aquila"
     total_requests = len(requests)
     tokenizer = AutoTokenizer.from_pretrained(model_info, trust_remote_code=True)
