@@ -86,7 +86,7 @@ def main(args: argparse.Namespace):
     # 在main函数中
     with concurrent.futures.ProcessPoolExecutor() as executor:
         # 分别为两个进程设置不同的GPU
-        future1 = executor.submit(run_vllm_on_specific_gpus, requests, args.model, tokenizer, 4, [3, 5, 6, 7])
+        future1 = executor.submit(run_vllm_on_specific_gpus, requests, args.model, tokenizer, 2, [3, 5, 6, 7])
         
         # 等待任务完成并获取结果
         elapsed_time1, input_num_tokens1, output_num_tokens1 = future1.result()
