@@ -1,0 +1,1 @@
+python vllm_1.py --dataset /staff/liqi/AquilaChat2-34B/dataset/scrambled_sampled_dataset.json --model /staff/liqi/Aquila --num-samples=1000 --tensor-parallel-size 8
