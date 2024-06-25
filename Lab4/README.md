@@ -1,4 +1,4 @@
-在本次实验中，我们选择使用Ray进行计算类任务的部署和测试
+在本次实验中，我们选择使用Ray进行计算类任务的部署和测试，实验报告已发布在知乎：https://zhuanlan.zhihu.com/p/705187137
 
 #### 1.性能指标列表
 经过调研，我们得到计算类任务的性能指标有如下几种：
@@ -144,6 +144,108 @@ part_num=1000000:
 
 因此较好的一个任务分块数量为24到2000左右，这时候的计算用时在18到19s左右，
 任务所用时间与单个任务的149s相比，变为了原来的12%左右，CPU占用率也达到了100%
+
+综上优化结果如下表：
+![alt text](image/20.png)
+
+#### Ray分布式部署
+
+通过Ray搭建三机集群，注意：所有机器需在同一局域网下。同时，在实验中发现部署后子节点会自动被kill掉的情况，需在添加wsl防火墙配置:
+```
+[experimental]
+autoMemoryReclaim=gradual  
+networkingMode=mirrored
+dnsTunneling=true
+firewall=true
+autoProxy=true
+```
+
+同时，将宿主机防火墙中的高级设置中添加wsl对应的入站规则，即可完成部署。
+
+搭建方法：
+
+1、打开所有端口（在所有机器上都运⾏）
+```
+sudo iptables -P INPUT ACCEPT 
+sudo iptables -P FORWARD ACCEPT 
+sudo iptables -P OUTPUT ACCEPT 
+sudo iptables -F 
+sudo iptables-save
+```
+官⽅步骤⾥只需要打开6379端口，但实际测试过程中需要将所有端⼜都打开才有效。
+2、先运⾏头结点，即在XXXA的机器上执⾏：
+```
+ray start --head --port=6379
+```
+这时候会出现⼀⼤段提⽰，⼤致说的是如果想在改节点上继续搭建集群，可以运⾏啥啥 啥，如果要停⽌，运⾏ ray stop 之类的。
+
+3、依次打开⼯作节点，在XXXB上运⾏：
+```
+ray start --address='XXXA:6379'
+```
+随后也会弹出开启成功的⼀些提⽰
+
+4、在程序中，init部分写为：
+```
+ray.init(address="XXXA:6379")
+```
+即可运⾏。
+多机分布式部署测试程序如下
+```
+import ray
+
+
+ray.init()
+cpu_num=48
+part_num=128
+
+
+@ray.remote(num_cpus=cpu_num)
+class calculate():
+    def __init__(self,num,part_num) -> None:
+        self.result=0
+        self.num=num
+        self.part_num=part_num
+
+    @ray.remote(num_cpus=1)
+    def estimate_pi(num_terms_1,num_terms_2):
+        pi_estimate = 0.0
+        sign = 1
+        for i in range(num_terms_1,num_terms_2):
+            term = 1.0 / (2 * i + 1)
+            pi_estimate += sign * term
+            sign *= -1    
+        return 4.0 * pi_estimate
+    
+    def get_result(self,data_nums):
+        part=int(data_nums/(self.part_num))
+        i=0.0
+        a=[]
+        for i in range(0,self.num):
+            a.append(self.estimate_pi.remote(i*part,(i+1)*part))
+        for i in range(0,self.num):
+            mid=ray.get(a[i])
+            self.result+=mid
+        return self.result
+        
+
+Actor=calculate.remote(cpu_num,part_num)
+result=Actor.get_result.remote(10000000000)
+b=ray.get(result)
+print(b)
+print("\n\n")
+```
+partnum为128，核数为48，为使结果明显，测试数据量增加10倍，结果如下：
+![alt text](https://pic3.zhimg.com/v2-7da7f04e5985233f934fa08f1b24d1f6_r.jpg)
+响应时间为82s，考虑到数据量增加10倍，与单机相比，三机性能约增加2.2倍，没有呈线性增加的原因可能为Ray集群间的通信延迟。
+
+CPU利用率几乎为100%：
+![alt text](https://pic1.zhimg.com/80/v2-c5b8a31d833c671b62427d2ce5b3ab78_1440w.webp)
+#### 参考资料
+Ray官方文档： https://docs.ray.io/en/latest/r
+一朵小脑花：python-ray集群搭建过程（踩坑经历）
+深度强化学习专栏 —— 4. 使用ray做分布式计算 - 古月居 (guyuehome.com)
+高性能分布式执行框架——Ray - Florian - 博客园 (cnblogs.com)
 
 
 
