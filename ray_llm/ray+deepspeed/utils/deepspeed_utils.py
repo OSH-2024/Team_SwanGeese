@@ -1,8 +1,3 @@
-作者：OpenDeployment
-链接：https://zhuanlan.zhihu.com/p/662968588
-来源：知乎
-著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
-
 # Copyright (c) Microsoft Corporation.
 # SPDX-License-Identifier: Apache-2.0
 
