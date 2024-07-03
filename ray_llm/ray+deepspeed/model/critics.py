@@ -1,12 +1,15 @@
 import math
 from typing import Dict, Optional
 
+import ray
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 from transformers.trainer import get_scheduler
-from trainer import PPOTrainer
-from utils import DeepspeedStrategy, blending_datasets, get_tokenizer
+
+from .omodels import actor, get_llm_for_sequence_regression
+from .utils import DeepspeedStrategy, blending_datasets, get_tokenizer
+
 from .launcher import BasePPORole
 
 
@@ -65,9 +68,10 @@ class CriticPPOTrainer(PPOTrainer):
         return self.training_step_critic(experience)
 
 
-class CriticModelActor(BasePPORole):
+@ray.remote(num_gpus=1)
+class CriticModelRayActor(BasePPORole):
     """
-    CriticModelActor类用于初始化和训练Critic模型。
+    CriticModelRayActor类用于在Ray远程环境中初始化和训练Critic模型。
     """
 
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, max_steps):
