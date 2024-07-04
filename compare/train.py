@@ -1,25 +1,24 @@
+from datasets import Dataset
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForSeq2Seq, TrainingArguments, Trainer
 import time
 import torch
-import pandas as pd
-from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForSeq2Seq, TrainingArguments, Trainer
 from peft import LoraConfig, TaskType, get_peft_model
 
-# 将JSON文件转换为Dataset
+# 将JSON文件转换为CSV文件
 df = pd.read_json('./huanhuan.json')
 ds = Dataset.from_pandas(df)
 
-# 加载分词器
 tokenizer = AutoTokenizer.from_pretrained('/root/autodl-tmp/LLM-Research/Meta-Llama-3-8B-Instruct', use_fast=False, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 
 def process_func(example):
     MAX_LENGTH = 384  # Llama分词器会将一个中文字切分为多个token，因此需要放开一些最大长度，保证数据的完整性
     input_ids, attention_mask, labels = [], [], []
-    instruction = tokenizer(f"user\n\n{example['instruction'] + example['input']}assistant\n\n", add_special_tokens=False)
-    response = tokenizer(f"{example['output']}", add_special_tokens=False)
+    instruction = tokenizer(f"user\n\n{example.get('instruction', '') + example.get('input', '')}assistant\n\n", add_special_tokens=False)
+    response = tokenizer(f"{example.get('output', '')}", add_special_tokens=False)
     input_ids = instruction["input_ids"] + response["input_ids"] + [tokenizer.pad_token_id]
-    attention_mask = instruction["attention_mask"] + response["attention_mask"] + [1]  # 因为eos token也是要关注的所以补充为1
+    attention_mask = instruction["attention_mask"] + response["attention_mask"] + [1]  # 因为eos token咱们也是要关注的所以 补充为1
     labels = [-100] * len(instruction["input_ids"]) + response["input_ids"] + [tokenizer.pad_token_id]
     if len(input_ids) > MAX_LENGTH:  # 做一个截断
         input_ids = input_ids[:MAX_LENGTH]
@@ -33,13 +32,9 @@ def process_func(example):
 
 tokenized_id = ds.map(process_func, remove_columns=ds.column_names)
 
-tokenizer.decode(list(filter(lambda x: x != -100, tokenized_id[1]["labels"])))
-
-# 加载模型
 model = AutoModelForCausalLM.from_pretrained('/root/autodl-tmp/LLM-Research/Meta-Llama-3-8B-Instruct', device_map="auto", torch_dtype=torch.bfloat16)
 model.enable_input_require_grads()  # 开启梯度检查点时，要执行该方法
 
-# 配置LoRA
 config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
@@ -51,7 +46,6 @@ config = LoraConfig(
 model = get_peft_model(model, config)
 model.print_trainable_parameters()
 
-# 训练参数
 args = TrainingArguments(
     output_dir="./output/llama3",
     per_device_train_batch_size=4,
@@ -64,41 +58,41 @@ args = TrainingArguments(
     gradient_checkpointing=True
 )
 
-# 计算吞吐量
-class ThroughputTrainer(Trainer):
-    def __init__(self, *args, **kwargs):
+# 自定义Trainer以测量tokens/s
+class CustomTrainer(Trainer):
+    def __init__(self, *args, tokenizer=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.total_samples = 0
-        self.total_tokens = 0
         self.start_time = None
+        self.total_tokens = 0
+        self.tokenizer = tokenizer  # 保存tokenizer为类属性
 
-    def on_train_begin(self, args, state, control, **kwargs):
+    def train(self, *args, **kwargs):
+        # 训练开始时记录时间
         self.start_time = time.time()
-    
-    def on_step_end(self, args, state, control, **kwargs):
-        self.total_samples += args.per_device_train_batch_size * args.gradient_accumulation_steps
-        self.total_tokens += sum(len(inputs['input_ids']) for inputs in kwargs['inputs'])
+        self.total_tokens = 0
+        super().train(*args, **kwargs)
+        # 训练结束时计算每秒处理的token数
+        elapsed_time = time.time() - self.start_time
+        tokens_per_second = self.total_tokens / elapsed_time
+        print(f"Training completed. Tokens per second: {tokens_per_second:.2f}")
 
-    def on_train_end(self, args, state, control, **kwargs):
-        end_time = time.time()
-        total_time = end_time - self.start_time
-        samples_per_second = self.total_samples / total_time
-        tokens_per_second = self.total_tokens / total_time
-        print(f"Training Throughput: {samples_per_second:.2f} samples/second")
-        print(f"Training Throughput: {tokens_per_second:.2f} tokens/second")
+    def training_step(self, model, inputs):
+        # 计算每步处理的token数
+        inputs = self._prepare_inputs(inputs)
+        tokens_in_batch = inputs["input_ids"].ne(self.tokenizer.pad_token_id).sum().item()
+        self.total_tokens += tokens_in_batch
+        return super().training_step(model, inputs)
 
-# 初始化Trainer
-trainer = ThroughputTrainer(
+trainer = CustomTrainer(
     model=model,
     args=args,
     train_dataset=tokenized_id,
     data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True),
+    tokenizer=tokenizer  # 将tokenizer传递给CustomTrainer
 )
 
-# 开始训练
 trainer.train()
 
-# 保存模型和分词器
 peft_model_id = "./llama3_lora"
 trainer.model.save_pretrained(peft_model_id)
 tokenizer.save_pretrained(peft_model_id)
