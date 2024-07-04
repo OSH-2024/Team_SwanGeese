@@ -2,7 +2,8 @@
 
 ### 配置
 
-GPU：一机一卡3090
+单卡GPU：一机一卡3090
+多卡GPU：一机两卡3090
 
 ### 普通，没有加速框架
 
@@ -13,13 +14,13 @@ GPU：一机一卡3090
 
 #### 推理：
 
-![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/b3c0fc56-da2d-4202-bf70-833e08186382)
+![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/435dc30d-0674-405a-ba6e-9cc90f46b1f2)
 
 
 ### 加速框架
 
 #### 训练使用deepspeed框架
-
+![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/6270be18-6e58-43ab-86ea-4dbbbdb8c5f5)
 
 
 #### 推理使用vllm+deepspeed框架
