@@ -30,6 +30,9 @@
 ### 使用Ray
 
 #### Ray+普通
+##### 训练：
+** 一开始我选择通过手动切割数据集的方式来分发数据： **
+
 ![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/3a8342f4-8e7a-428c-9111-26260539db87)
 
 
@@ -39,7 +42,18 @@
 
 ![445675112575912697](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/24958095-23a7-4443-b07e-6bbfc380c19e)
 
-##### 训练：
+
+
+** 后来我选择通过显卡自动申请数据请求来分发数据： **
+
+![34017ff3dd95c1d2938e0c9f06b8dca](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/7d8945eb-c6cd-42e0-a296-9e79b0018995)
+
+
+训练中显卡使用情况：
+
+
+![9d099f37edce6b0d52d4acaf430a5d1](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/c87b8b64-a026-4dcc-9c09-531bd271a0bc)
+
 
 
 
