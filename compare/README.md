@@ -30,7 +30,7 @@
 ### 使用Ray
 
 #### Ray+普通
-![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/ed9cdb59-e7f9-4fe4-84ea-5a7110e98822)
+![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/3a8342f4-8e7a-428c-9111-26260539db87)
 
 
 
