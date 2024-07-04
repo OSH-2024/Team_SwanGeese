@@ -30,6 +30,10 @@
 ### 使用Ray
 
 #### Ray+普通
+![48648453345347539](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/78510d04-12dd-412e-bd53-fe30aac4a660)
+
+训练中显卡使用状况：
+![445675112575912697](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/24958095-23a7-4443-b07e-6bbfc380c19e)
 
 ##### 训练：
 
