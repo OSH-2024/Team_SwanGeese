@@ -8,11 +8,13 @@ GPU：一机一卡3090
 
 #### 训练：
 
-![image-20240704090940753](C:\Users\Admin\AppData\Roaming\Typora\typora-user-images\image-20240704090940753.png)
+![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/744a0182-2808-4cb6-9d9b-10caefc9aaff)
+
 
 #### 推理：
 
-![image-20240704091654110](C:\Users\Admin\AppData\Roaming\Typora\typora-user-images\image-20240704091654110.png)
+![image](https://github.com/OSH-2024/Team_SwanGeese/assets/144820167/b3c0fc56-da2d-4202-bf70-833e08186382)
+
 
 ### 加速框架
 
