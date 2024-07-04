@@ -90,6 +90,7 @@ def train_model(dataset, gpu_id):
             elapsed_time = time.time() - self.start_time
             tokens_per_second = self.total_tokens / elapsed_time
             print(f"Training completed. Tokens per second: {tokens_per_second:.2f}")
+            return tokens_per_second
 
         def training_step(self, model, inputs):
             inputs = self._prepare_inputs(inputs)
@@ -105,14 +106,20 @@ def train_model(dataset, gpu_id):
         tokenizer=tokenizer
     )
 
-    trainer.train()
+    tokens_per_second = trainer.train()
 
     peft_model_id = f"./llama3_lora_gpu_{gpu_id}"
     trainer.model.save_pretrained(peft_model_id)
     tokenizer.save_pretrained(peft_model_id)
 
-# 启动分布式训练任务
-ray.get([
+    return tokens_per_second
+
+# 启动分布式训练任务并收集tokens/s
+results = ray.get([
     train_model.remote(split_datasets[0], 0),
     train_model.remote(split_datasets[1], 1)
 ])
+
+# 计算总的tokens/s
+total_tokens_per_second = sum(results)
+print(f"Total tokens per second: {total_tokens_per_second:.2f}")
