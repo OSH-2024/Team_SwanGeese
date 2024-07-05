@@ -175,11 +175,9 @@ def train_model(gpu_id, data_distributor):
     # 获取新的测试数据集
     test_dataset = ray.get(data_distributor.get_batch_for_gpu.remote(gpu_id))
     if test_dataset:
-        print(f"GPU {gpu_id} Test Data: {test_dataset}")
         avg_test_loss = trainer.evaluate(test_dataset)
     else:
         avg_test_loss = float('nan')
-    print(f"GPU {gpu_id} Test Loss: {avg_test_loss:.4f}")
 
     peft_model_id = f"./llama3_lora_gpu_{gpu_id}"
     trainer.model.save_pretrained(peft_model_id)
