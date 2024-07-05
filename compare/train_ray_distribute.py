@@ -104,6 +104,7 @@ def train_model(gpu_id, data_distributor):
             self.num_steps = 0
             self.tokenizer = tokenizer
             self.train_losses = []
+            self.log_info = []
 
         def train(self, *args, **kwargs):
             self.start_time = time.time()
@@ -117,11 +118,20 @@ def train_model(gpu_id, data_distributor):
                 self.train_dataset = batch
                 super().train(*args, **kwargs)
                 self.print_progress()
+                logs = {
+                    'train_runtime': time.time() - self.start_time,
+                    'train_samples_per_second': self.total_tokens / (time.time() - self.start_time),
+                    'train_steps_per_second': self.num_steps / (time.time() - self.start_time),
+                    'train_loss': self.total_loss / self.num_steps if self.num_steps > 0 else 0.0,
+                    'epoch': self.state.epoch
+                }
+                self.log_info.append(logs)
+                print(f"Custom Log: {logs}")
             elapsed_time = time.time() - self.start_time
             tokens_per_second = self.total_tokens / elapsed_time
             avg_loss = self.total_loss / self.num_steps if self.num_steps > 0 else 0.0
             print(f"Training completed. Tokens per second: {tokens_per_second:.2f}, Average loss: {avg_loss:.4f}")
-            return tokens_per_second, self.total_loss, self.num_steps, elapsed_time, self.train_losses
+            return tokens_per_second, self.total_loss, self.num_steps, elapsed_time, self.train_losses, self.log_info
 
         def training_step(self, model, inputs):
             inputs = self._prepare_inputs(inputs)
@@ -160,7 +170,7 @@ def train_model(gpu_id, data_distributor):
         tokenizer=tokenizer
     )
 
-    tokens_per_second, total_loss, num_steps, elapsed_time, train_losses = trainer.train()
+    tokens_per_second, total_loss, num_steps, elapsed_time, train_losses, log_info = trainer.train()
 
     # 获取新的测试数据集
     test_dataset = ray.get(data_distributor.get_batch_for_gpu.remote(gpu_id))
@@ -175,7 +185,7 @@ def train_model(gpu_id, data_distributor):
     trainer.model.save_pretrained(peft_model_id)
     tokenizer.save_pretrained(peft_model_id)
 
-    return tokens_per_second, total_loss, num_steps, elapsed_time, train_losses, avg_test_loss
+    return tokens_per_second, total_loss, num_steps, elapsed_time, train_losses, log_info, avg_test_loss
 
 # 启动分布式训练任务并收集结果
 start_time = time.time()
@@ -187,20 +197,22 @@ total_time = time.time() - start_time
 
 # 分别输出每个GPU的数据吞吐率和损失值
 all_train_losses = []
+log_infos = []
 for i, result in enumerate(results):
     print(f"GPU {i} tokens per second: {result[0]:.2f}")
-    print(f"GPU {i} test loss: {result[5]:.4f}")
+    print(f"GPU {i} test loss: {result[6]:.4f}")
     all_train_losses.extend(result[4])
+    log_infos.extend(result[5])
 
 # 计算总的tokens/s和汇总train_loss
 total_tokens_per_second = sum(result[0] for result in results)
 total_train_loss = sum(result[1] for result in results)
 total_train_steps = sum(result[2] for result in results)
 total_elapsed_time = sum(result[3] for result in results)
-average_test_loss = sum(result[5] for result in results if not pd.isna(result[5])) / len(results)
+average_test_loss = sum(result[6] for result in results if not pd.isna(result[6])) / len(results)
 
-# 计算平均训练损失
-average_train_loss = sum(all_train_losses) / len(all_train_losses)
+# 计算每次日志记录的平均训练损失
+average_train_loss = sum(log['train_loss'] for log in log_infos) / len(log_infos)
 
 print(f"Total tokens per second: {total_tokens_per_second:.2f}")
 print(f"Average train loss: {average_train_loss:.4f}")
