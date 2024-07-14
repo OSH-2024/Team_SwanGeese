@@ -33,8 +33,8 @@
         - [研究路线](#研究路线)
         - [核心代码讲解](#核心代码讲解)
     - [优化结果分析](#优化结果分析)
-      - [ray+deepspeed](#ray+deepspeed)
-      - [数据分发](#数据分发)
+      - [ray+deepspeed](#1、ray+deepspeed)
+      - [数据分发](#2、自动数据分发)
     - [创新点](#创新点)
     - [不足和展望](#不足和展望)
     - [参考文献](#参考文献)
@@ -609,7 +609,7 @@ data_distributor = DataDistributor.remote(dataset, 3, batch_size=20)
 以OpenRLHF框架为例，该框架是OpenLLMAI、字节跳动、网易伏羲AI Lab、阿里巴巴的一个联合团队提出并开源的，它使用了Ray、vLLM和DeepSpeed对模型调度进行了重新设计，可支持超700亿参数的模型的RLHF训练。这种设计使得OpenRLHF能够轻松实现大规模RLHF训练，并提供了高性能、简单易用和分布式训练等优势。实现了在训练llama-7b模型时相比Deepspeedchat接近2倍的性能优化，我们也在自己的项目中复习了其部分ray+deepspeed的优化。
 ![alt text](pics/3.png)
 ## 优化结果与分析
-### 1 ray+deepspeed
+### 1、ray+deepspeed
 以下是单独使用ray训练llama2-7b的结果:
 ![alt text](pics/4.png)
 
