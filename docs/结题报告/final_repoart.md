@@ -657,9 +657,11 @@ Ray Serve是基于Ray框架的模型在线推理服务框架
 ## 优化结果与分析
 ### 1.ray+deepspeed
 以下是单独使用ray训练llama2-7b的结果:
+
 ![alt text](pics/4.png)
 
 ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
+
 ![alt text](pics/5.png)
 
 可以看到，通过使用ray+deepspeed训练大模型，吞吐率提高了42.8%
@@ -690,13 +692,16 @@ ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
 
 ### 3. Ray Serve使用
 我们利用上述的测试思路，得到响应时间和GPU利用率的变化如下：
+
 ![alt text](pics/003.png)
 ![alt text](pics/004.png)
 ![alt text](pics/005.png)
 ![alt text](pics/006.png)
 
 当副本数更大，超过20的时候，响应时间反而变得更长，最终得到的响应时间随副本数的变化图如下：
+
 ![alt text](pics/007.png)
+
 经过分析，响应时间变长的原因是当副本数超过20后，GPU的显存占用率过高
 
 ## 创新点
