@@ -8,9 +8,9 @@
     - [项目简介](#项目简介)
     - [项目背景和调研](#项目背景和调研)
       - [项目背景]
-         - [大模型的内存瓶颈]
-         - [分布式部署的兴起与发展]
-         - [分布式的挑战]
+         - [大模型的内存瓶颈](#11-大模型的内存瓶颈)
+         - [分布式部署的兴起与发展](#12-分布式部署的兴起与发展)
+         - [分布式的挑战](#13-分布式的挑战)
       - [Ray框架的理论基础](#1ray框架的理论基础)
          - [Ray计算模型](#11-ray计算模型)
          - [Ray分布式调度器](#12-ray分布式调度器)
@@ -208,20 +208,363 @@ Ray 的独特功能之一是它的主内存对象存储 Plasma，它使用共享
 ## 技术路线
 ---
 ### 1 Ray train的使用
-### 2 deepspeed zero的使用
-### 3 Ray+deepspeed的优势
+ray train 的总体架构如下：
+![alt text](pics/1.png)
+由以下四个部分组成：
++ 训练函数：一个包含模型训练逻辑的 Python 函数。
 
++ 工作进程：运行训练函数的进程。
+
++ 扩展配置：有关工作进程数量和计算资源（例如，CPU 或 GPU）的配置。
+
++ 训练器：一个将训练函数、工作进程和扩展配置结合起来以执行分布式训练作业的 Python 类。
+以下是一段官方提供的简单使用ray train的训练代码
+```python
+import os
+import tempfile
+
+import torch
+from torch.nn import CrossEntropyLoss
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+from torchvision.models import resnet18
+from torchvision.datasets import FashionMNIST
+from torchvision.transforms import ToTensor, Normalize, Compose
+
+import ray.train.torch
+
+def train_func():
+    # Model, Loss, Optimizer
+    model = resnet18(num_classes=10)
+    model.conv1 = torch.nn.Conv2d(
+        1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False
+    )
+    # [1] Prepare model.
+    model = ray.train.torch.prepare_model(model)
+    # model.to("cuda")  # This is done by `prepare_model`
+    criterion = CrossEntropyLoss()
+    optimizer = Adam(model.parameters(), lr=0.001)
+
+    # Data
+    transform = Compose([ToTensor(), Normalize((0.5,), (0.5,))])
+    data_dir = os.path.join(tempfile.gettempdir(), "data")
+    train_data = FashionMNIST(root=data_dir, train=True, download=True, transform=transform)
+    train_loader = DataLoader(train_data, batch_size=128, shuffle=True)
+    # [2] Prepare dataloader.
+    train_loader = ray.train.torch.prepare_data_loader(train_loader)
+
+    # Training
+    for epoch in range(10):
+        if ray.train.get_context().get_world_size() > 1:
+            train_loader.sampler.set_epoch(epoch)
+
+        for images, labels in train_loader:
+            # This is done by `prepare_data_loader`!
+            # images, labels = images.to("cuda"), labels.to("cuda")
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # [3] Report metrics and checkpoint.
+        metrics = {"loss": loss.item(), "epoch": epoch}
+        with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+            torch.save(
+                model.module.state_dict(),
+                os.path.join(temp_checkpoint_dir, "model.pt")
+            )
+            ray.train.report(
+                metrics,
+                checkpoint=ray.train.Checkpoint.from_directory(temp_checkpoint_dir),
+            )
+        if ray.train.get_context().get_world_rank() == 0:
+            print(metrics)
+
+# [4] Configure scaling and resource requirements.
+scaling_config = ray.train.ScalingConfig(num_workers=2, use_gpu=True)
+
+# [5] Launch distributed training job.
+trainer = ray.train.torch.TorchTrainer(
+    train_func,
+    scaling_config=scaling_config,
+    # [5a] If running in a multi-node cluster, this is where you
+    # should configure the run's persistent storage that is accessible
+    # across all worker nodes.
+    # run_config=ray.train.RunConfig
+)
+result = trainer.fit()
+
+# [6] Load the trained model.
+with result.checkpoint.as_directory() as checkpoint_dir:
+    model_state_dict = torch.load(os.path.join(checkpoint_dir, "model.pt"))
+    model = resnet18(num_classes=10)
+    model.conv1 = torch.nn.Conv2d(
+        1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False
+    )
+    model.load_state_dict(model_state_dict)
+
+```
+
+为方便使用，可以利用以下API：
+![alt text](pics/2.png)
+### 2 deepspeed zero的使用
+Ray本身支持和多种加速框架联合使用，如 Lightning，Transformers, Accelerate，Tenserflow等等，对deepspeed也有很好的支持性，以下为ray+deepspeed的代码框架
+```python
+
+import deepspeed
+from deepspeed.accelerator import get_accelerator
+
+def train_func():
+    model = ...
+    train_dataset = ...
+    eval_dataset = ...
+    deepspeed_config = {...} # Deepspeed config 文件/代码
+
+    # 准备分布式训练的各个组件
+    model, optimizer, train_dataloader, lr_scheduler = deepspeed.initialize(
+        model=model,
+        model_parameters=model.parameters(),
+        training_data=tokenized_datasets["train"],
+        collate_fn=collate_fn,
+        config=deepspeed_config,
+    )
+
+    # Define the GPU device for the current worker
+    device = get_accelerator().device_name(model.local_rank)
+
+    # Start training
+    ...
+
+from ray.train.torch import TorchTrainer
+from ray.train import ScalingConfig
+
+trainer = TorchTrainer(
+    train_func,
+    scaling_config=ScalingConfig(...),
+    #该部分同之前介绍的ray
+    ...
+)
+result = trainer.fit()
+```
+以下为Ray+deepspeed并使用ZERO 3的示例代码
+```python
+from tempfile import TemporaryDirectory
+
+import deepspeed
+import torch
+from datasets import load_dataset
+from deepspeed.accelerator import get_accelerator
+from torchmetrics.classification import BinaryAccuracy, BinaryF1Score
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, set_seed
+
+import ray
+import ray.train
+from ray.train import Checkpoint, DataConfig, ScalingConfig
+from ray.train.torch import TorchTrainer
+
+
+def train_func(config):
+    """Your training function that will be launched on each worker."""
+
+    # Unpack training configs
+    set_seed(config["seed"])
+    num_epochs = config["num_epochs"]
+    train_batch_size = config["train_batch_size"]
+    eval_batch_size = config["eval_batch_size"]
+
+    # Instantiate the Model
+    model = AutoModelForSequenceClassification.from_pretrained(
+        "bert-base-cased", return_dict=True
+    )
+
+    # Prepare Ray Data Loaders
+    # ====================================================
+    train_ds = ray.train.get_dataset_shard("train")
+    eval_ds = ray.train.get_dataset_shard("validation")
+
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+
+    def collate_fn(batch):
+        outputs = tokenizer(
+            list(batch["sentence1"]),
+            list(batch["sentence2"]),
+            truncation=True,
+            padding="longest",
+            return_tensors="pt",
+        )
+        outputs["labels"] = torch.LongTensor(batch["label"])
+        return outputs
+
+    train_dataloader = train_ds.iter_torch_batches(
+        batch_size=train_batch_size, collate_fn=collate_fn
+    )
+    eval_dataloader = eval_ds.iter_torch_batches(
+        batch_size=eval_batch_size, collate_fn=collate_fn
+    )
+    # ====================================================
+
+    # Initialize DeepSpeed Engine
+    model, optimizer, _, lr_scheduler = deepspeed.initialize(
+        model=model,
+        model_parameters=model.parameters(),
+        config=deepspeed_config,
+    )
+    device = get_accelerator().device_name(model.local_rank)
+
+    # Initialize Evaluation Metrics
+    f1 = BinaryF1Score().to(device)
+    accuracy = BinaryAccuracy().to(device)
+
+    for epoch in range(num_epochs):
+        # Training
+        model.train()
+        for batch in train_dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            loss = outputs.loss
+            model.backward(loss)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+
+        # Evaluation
+        model.eval()
+        for batch in eval_dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            with torch.no_grad():
+                outputs = model(**batch)
+            predictions = outputs.logits.argmax(dim=-1)
+
+            f1.update(predictions, batch["labels"])
+            accuracy.update(predictions, batch["labels"])
+
+        # torchmetrics will aggregate the metrics across all workers
+        eval_metric = {
+            "f1": f1.compute().item(),
+            "accuracy": accuracy.compute().item(),
+        }
+        f1.reset()
+        accuracy.reset()
+
+        if model.global_rank == 0:
+            print(f"epoch {epoch}:", eval_metric)
+
+        # Report checkpoint and metrics to Ray Train
+        # ==============================================================
+        with TemporaryDirectory() as tmpdir:
+            # Each worker saves its own checkpoint shard
+            model.save_checkpoint(tmpdir)
+
+            # Ensure all workers finished saving their checkpoint shard
+            torch.distributed.barrier()
+
+            # Report checkpoint shards from each worker in parallel
+            ray.train.report(
+                metrics=eval_metric, checkpoint=Checkpoint.from_directory(tmpdir)
+            )
+        # ==============================================================
+
+
+if __name__ == "__main__":
+    deepspeed_config = {
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": 2e-5,
+            },
+        },
+        "scheduler": {"type": "WarmupLR", "params": {"warmup_num_steps": 100}},
+        "fp16": {"enabled": True},
+        "bf16": {"enabled": False},  # Turn this on if using AMPERE GPUs.
+        "zero_optimization": {
+            "stage": 3,
+            "offload_optimizer": {
+                "device": "none",
+            },
+            "offload_param": {
+                "device": "none",
+            },
+        },
+        "gradient_accumulation_steps": 1,
+        "gradient_clipping": True,
+        "steps_per_print": 10,
+        "train_micro_batch_size_per_gpu": 16,
+        "wall_clock_breakdown": False,
+    }
+
+    training_config = {
+        "seed": 42,
+        "num_epochs": 3,
+        "train_batch_size": 16,
+        "eval_batch_size": 32,
+        "deepspeed_config": deepspeed_config,
+    }
+
+    # Prepare Ray Datasets
+    hf_datasets = load_dataset("glue", "mrpc")
+    ray_datasets = {
+        "train": ray.data.from_huggingface(hf_datasets["train"]),
+        "validation": ray.data.from_huggingface(hf_datasets["validation"]),
+    }
+
+    trainer = TorchTrainer(
+        train_func,
+        train_loop_config=training_config,
+        scaling_config=ScalingConfig(num_workers=4, use_gpu=True),
+        datasets=ray_datasets,
+        dataset_config=DataConfig(datasets_to_split=["train", "validation"]),
+        # If running in a multi-node cluster, this is where you
+        # should configure the run's persistent storage that is accessible
+        # across all worker nodes.
+        # run_config=ray.train.RunConfig(storage_path="s3://..."),
+    )
+
+    result = trainer.fit()
+
+    # Retrieve the best checkponints from results
+    result.best_checkpoints
+```
+### 3 Ray+deepspeed的优势
+#### 1. 深度学习优化能力
+DeepSpeed的优势：
+
+极致的训练速度和效率：DeepSpeed旨在提供极致的模型训练速度和效率。它通过创新的算法和技术，如ZeRO（Zero Redundancy Optimizer）算法，将优化器的状态、梯度和参数在分布式环境中分割，减少了内存占用，实现了更大的模型训练，且通过在ZERO1-2对模型的切分，一定程度上减少了同步状态带来的通信开销，提高了吞吐量
+
+混合精度训练：DeepSpeed支持半精度（FP16）和单精度（FP32）混合计算，以牺牲较小的精度换取大幅度的性能提升。
+
+高效的模型并行：DeepSpeed提供灵活的模型并行策略，如数据并行、模型并行和管道并行，适用于各种规模的GPU集群。
+
+预训练模型的快速迁移：DeepSpeed针对多个预训练模型（如BERT, GPT等）进行了优化，可以轻松地将这些模型迁移到DeepSpeed框架中，无需大量代码修改。
+#### 2. 与Ray的协同作用
+Ray与DeepSpeed结合的优势：
+
+无缝集成与易用性：Ray和DeepSpeed都提供了与PyTorch等深度学习框架的无缝集成，使得开发者可以轻松地将其应用于自己的项目中。结合使用时，可以进一步简化分布式深度学习训练的部署和管理。
+
+资源优化与调度：Ray的分布式计算框架能够智能地调度和管理计算资源，实现分布式训练时异步调度优化，而DeepSpeed则能够通过其优化算法和技术减少资源（显存）消耗。两者结合可以更加高效地利用计算资源，提高训练效率。
+
+#### 3. 相关工作
+以OpenRLHF框架为例，该框架是OpenLLMAI、字节跳动、网易伏羲AI Lab、阿里巴巴的一个联合团队提出并开源的，它使用了Ray、vLLM和DeepSpeed对模型调度进行了重新设计，可支持超700亿参数的模型的RLHF训练。这种设计使得OpenRLHF能够轻松实现大规模RLHF训练，并提供了高性能、简单易用和分布式训练等优势。实现了在训练llama-7b模型时相比Deepspeedchat接近2倍的性能优化，我们也在自己的项目中复习了其部分ray+deepspeed的优化。
+![alt text](pics/3.png)
 ## 优化结果与分析
 ### 1 ray+deepspeed
+以下是单独使用ray训练llama2-7b的结果:
+![alt text](pics/4.png)
+
+ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
+![alt text](pics/5.png)
+
+可以看到，通过使用ray+deepspeed训练大模型，吞吐率提高了42.8%
+![alt text](pics/6.png)
 
 ## 创新点
 - 1. 通过集成Ray以及其他各项技术，并进行接口调用与调参，从而优化数据部署与吞吐量，实现大模型训练时数据吞吐量的优化。
 
-- 2. 通过调研ZeRO，vllm，Adam Offload，Pinned Memory等框架，尝试与Ray集成。并探究优化程度。
+- 2. 通过调研ZeRO，vllm，Adam Offload等加速框架，尝试与Ray集成。并探究优化程度。
 
 - 3. 通过应用ZERO-3，对Optimizer States，Gradient和Model Parameter三方面进行分割，优化ray+大模型部署时的数据交换与调度。
 
-
+## 不足与展望
 
 ## 参考资料
 [1] [OpenRLHF github仓库](https://github.com/OpenLLMAI/OpenRLHF/tree/main)
