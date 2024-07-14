@@ -221,25 +221,7 @@ Ray 的独特功能之一是它的主内存对象存储 Plasma，它使用共享
 
 - 3. 通过应用ZERO-3，对Optimizer States，Gradient和Model Parameter三方面进行分割，优化ray+大模型部署时的数据交换与调度。
 
-## 概要设计报告：
 
-### 计划实现目标：
-
-通过Ray与其他框架结合，实现训练大模型期间数据的调度、分配、部署优化。
-
-### 实现步骤：
-
-1、可行性验证（初步）：Ray+大模型( <=LLama 7B ）
-
-2、分布式部署LLama 13B模型，实现性能监控模块，确定Basiline ，选用中等模型如13B进行优化
-
-3、(可选)通过Pytorch零拷贝模型与Ray结合训练中等大小模型，调参，并查看优化程度
-
-4、(高阶可选)与ZeRO-1/ZeRO-2结合，训练中等大小模型，32B左右，并测试优化性能。
-
-5、(高阶可选)实现ZeRO-3的结合，训练中等大小模型，并进行优化。
-
-6、(高阶可选)实现与vllm结合，训练较大模型，并进行优化。
 
 ## 参考资料
 [1] [OpenRLHF github仓库](https://github.com/OpenLLMAI/OpenRLHF/tree/main)
