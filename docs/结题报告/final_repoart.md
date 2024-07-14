@@ -565,7 +565,8 @@ ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
 - 3. 通过应用ZERO-3，对Optimizer States，Gradient和Model Parameter三方面进行分割，优化ray+大模型部署时的数据交换与调度。
 
 ## 不足与展望
-
+### 1.通信带宽相关的优化
+本次大作业中，由于通信带宽的限制，在一些情况下使用Ray反而造成了负优化。我们在华为杭州研究所参观时得知其MindSpore框架除了采用模型并行与数据并行，还采用了自动并行、多流水交织并行、自动并行等手段达到了“藏通信”的效果，即在训练过程中，尽量重叠计算和通信，以充分利用 GPU 资源。例如，在一个 GPU 上进行前向传播和反向传播的同时，可以在其他 GPU 上进行梯度通信，减少等待时间和通信开销。这可以作为本项目未来努力的方向。
 ## 参考资料
 [1] [OpenRLHF github仓库](https://github.com/OpenLLMAI/OpenRLHF/tree/main)
 [2] [开启训练之旅: 基于Ray和vLLM构建70B+模型的开源RLHF全量训练框架 - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/678828949)
