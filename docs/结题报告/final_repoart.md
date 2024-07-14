@@ -630,7 +630,7 @@ Ray Serve是基于Ray框架的模型在线推理服务框架
 4. 极多模型复用少量硬件
    
 其基本结构如下图所示：
-![alt text](001.png)
+![alt text](pics/001.png)
 主要作用是利用Ray的分布式调度，将单个或者多个模型分布部署到多个节点上
 进行推理，同时有着HTTP接口，可以对网络请求进行处理
 
@@ -648,7 +648,7 @@ Ray Serve是基于Ray框架的模型在线推理服务框架
 对于GPT-2（模型参数0.15G），利用Ray Serve 将其部署到网络上，再用Python中的Request请求访问测试，通过对参数的修改观察优化结果
 
 下图中是Ray Serve的部署指令，num_replica代表部署模型的副本数
-![alt text](002.png)
+![alt text](pics/002.png)
 我们对副本数进行修改，希望用python进行1000次请求的测试得到结果
 
 
@@ -690,13 +690,13 @@ ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
 
 ### 3. Ray Serve使用
 我们利用上述的测试思路，得到响应时间和GPU利用率的变化如下：
-![alt text](003.png)
-![alt text](004.png)
-![alt text](005.png)
-![alt text](006.png)
+![alt text](pics/003.png)
+![alt text](pics/004.png)
+![alt text](pics/005.png)
+![alt text](pics/006.png)
 
 当副本数更大，超过20的时候，响应时间反而变得更长，最终得到的响应时间随副本数的变化图如下：
-![alt text](007.png)
+![alt text](pics/007.png)
 经过分析，响应时间变长的原因是当副本数超过20后，GPU的显存占用率过高
 
 ## 创新点
