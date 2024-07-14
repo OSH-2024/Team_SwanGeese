@@ -2,33 +2,39 @@
 # 结题报告
 ## Ray+大模型分布式部署优化
 
-- [](#结题报告)
+- [结题报告](#结题报告)
   - [Ray+大模型分布式部署优化](#Ray+大模型分布式部署优化)
     - [组员](#组员)
     - [项目简介](#项目简介)
     - [项目背景和调研](#项目背景和调研)
-      - [项目背景]
-         - [大模型的内存瓶颈](#11-大模型的内存瓶颈)
-         - [分布式部署的兴起与发展](#12-分布式部署的兴起与发展)
-         - [分布式的挑战](#13-分布式的挑战)
+      - [项目背景](#项目背景)
+        - [大模型的内存瓶颈](#11-大模型的内存瓶颈)
+        - [分布式部署的兴起与发展](#12-分布式部署的兴起与发展)
+        - [分布式的挑战](#13-分布式的挑战)
       - [Ray框架的理论基础](#1ray框架的理论基础)
-         - [Ray计算模型](#11-ray计算模型)
-         - [Ray分布式调度器](#12-ray分布式调度器)
-         - [Ray分布式对象存储器](#13-ray分布式对象存储器)
-         - [Ray相对其他分布式框架的优势](#14-ray相对其他分布式框架的优势)
-            - [Mapreduce](#141-mapreduce)
-            - [Spark](#143-spark)
+        - [Ray计算模型](#11-ray计算模型)
+        - [Ray分布式调度器](#12-ray分布式调度器)
+        - [Ray分布式对象存储器](#13-ray分布式对象存储器)
+        - [Ray相对其他分布式框架的优势](#14-ray相对其他分布式框架的优势)
+          - [Mapreduce](#141-mapreduce)
+          - [Spark](#143-spark)
       - [Deepspeed ZERO 理论基础](#deepspeed-zero-理论基础)
-         - [ZERO优化的三个级别](#21-zero优化的三个级别)
-            - [ZeRO-1](#211-zero-1)
-            - [ZeRO-2](#212-zero-2)
-            - [ZeRO-3](#213-zero-3)    
+        - [ZERO优化的三个级别](#21-zero优化的三个级别)
+          - [ZeRO-1](#211-zero-1)
+          - [ZeRO-2](#212-zero-2)
+          - [ZeRO-3](#213-zero-3)    
       - [零拷贝技术](#3-零拷贝技术)  
     - [技术路线](#技术路线)
       - [ray train的使用](#raytrain的使用)
       - [deepspeed zero的使用](#deepspeedzero的使用)
       - [ray+deepspeed进行分布式训练的优势](#ray+deepspeed进行分布式训练的优势)
+      - [关于数据分发的尝试](#关于数据分发的尝试)
+        - [研究思路](#研究思路)
+        - [研究路线](#研究路线)
+        - [核心代码讲解](#核心代码讲解)
     - [优化结果分析](#优化结果分析)
+      - [ray+deepspeed](#ray+deepspeed)
+      - [数据分发](#数据分发)
     - [创新点](#创新点)
     - [不足和展望](#不足和展望)
     - [参考文献](#参考文献)
@@ -543,6 +549,62 @@ Ray与DeepSpeed结合的优势：
 
 资源优化与调度：Ray的分布式计算框架能够智能地调度和管理计算资源，实现分布式训练时异步调度优化，而DeepSpeed则能够通过其优化算法和技术减少资源（显存）消耗。两者结合可以更加高效地利用计算资源，提高训练效率。
 
+### 关于数据分发的尝试
+
+#### 研究思路
+
+Ray的分布式计算框架和其他加速框架主要是对模型进行切割并部署到各个显卡上，我们选择了新的一个方向，即对训练数据集的分布部署，从而实现分布训练的加速。
+
+#### 研究路线
+
+![alt text](pics/11.jpg)
+
+从单卡训练到手动分割数据集再到数据集的自动分发。实现了数据集的分布部署，减少了显卡的任务量，从而减少对显卡显存的需求，也加速了训练过程，为以后的训练普及有更加深层次的意义。
+
+
+
+#### 核心代码讲解
+
+```python
+# 定义数据分发Actor
+@ray.remote
+class DataDistributor:
+    def __init__(self, dataset, num_splits, batch_size):
+        self.tokenizer = AutoTokenizer.from_pretrained('/root/autodl-tmp/LLM-Research/Meta-Llama-3-8B-Instruct', use_fast=False, trust_remote_code=True)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.dataset = dataset.map(lambda x: process_func(x, self.tokenizer), remove_columns=dataset.column_names)
+        self.num_splits = num_splits
+        self.batch_size = batch_size
+        self.current_index = [0] * num_splits
+        self.split_size = len(self.dataset) // num_splits
+
+    def get_batch_for_gpu(self, gpu_id):
+        if self.current_index[gpu_id] >= self.split_size:
+            return None
+        start_idx = self.current_index[gpu_id]
+        end_idx = min(start_idx + self.batch_size, self.split_size)
+        self.current_index[gpu_id] = end_idx
+        return self.dataset.select(range(gpu_id * self.split_size + start_idx, gpu_id * self.split_size + end_idx))
+
+    def get_progress(self, gpu_id):
+        return self.current_index[gpu_id], self.split_size
+
+# 启动数据分发Actor
+data_distributor = DataDistributor.remote(dataset, 3, batch_size=20)
+```
+
+
+
+我们实现了使用Ray的Actor模型创建了一个数据分发器（DataDistributor），可以动态地将数据批次分发到不同的GPU上。
+
+我们有以下几个创新点：
+
+**动态分发**：DataDistributor类会根据当前的GPU索引动态地分发数据批次。每次调用get_batch_for_gpu(gpu_id)方法时，它会返回该GPU的一个数据批次，并更新当前的索引。
+
+**多GPU支持**：通过num_splits参数将数据集分割成多个部分，每个GPU处理一部分数据。这确保了各个GPU能获得均匀分布的数据。
+
+**进度跟踪**：get_progress(gpu_id)方法可以跟踪每个GPU的处理进度，用于训练过程中打印进度信息。
+
 #### 3. 相关工作
 以OpenRLHF框架为例，该框架是OpenLLMAI、字节跳动、网易伏羲AI Lab、阿里巴巴的一个联合团队提出并开源的，它使用了Ray、vLLM和DeepSpeed对模型调度进行了重新设计，可支持超700亿参数的模型的RLHF训练。这种设计使得OpenRLHF能够轻松实现大规模RLHF训练，并提供了高性能、简单易用和分布式训练等优势。实现了在训练llama-7b模型时相比Deepspeedchat接近2倍的性能优化，我们也在自己的项目中复习了其部分ray+deepspeed的优化。
 ![alt text](pics/3.png)
@@ -558,6 +620,28 @@ ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
 
 ![alt text](pics/6.png)
 
+### 2、自动数据分发
+
+##### 训练过程
+
+![alt text](pics/7.jpg)
+
+可见训练过程中，单卡和多卡的手动预分割数据集的训练量较大。而数据的自动分发过程中，训练量较小，而且可以通过显存等现实情况进行调参从而实现数据分配。
+
+##### 训练结果
+
+<![alt text](pics/8.jpg)
+
+
+
+![alt text](pics/9.jpg)
+
+
+
+制作成表格图，可以看到自动数据分割的训练速度(tokens/s)与显卡数量成正比关系，训练时间与显卡数量成反比关系，加速明显。
+
+![alt text](pics/10.jpg)
+
 ## 创新点
 - 1. 通过集成Ray以及其他各项技术，并进行接口调用与调参，从而优化数据部署与吞吐量，实现大模型训练时数据吞吐量的优化。
 
@@ -565,9 +649,15 @@ ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
 
 - 3. 通过应用ZERO-3，对Optimizer States，Gradient和Model Parameter三方面进行分割，优化ray+大模型部署时的数据交换与调度。
 
+- 4. 通过数据自动分发技术，实现合理的显存分配，同时也减少了数据的调度产生的时间成本与能源成本。
+
 ## 不足与展望
 ### 1.通信带宽相关的优化
 本次大作业中，由于通信带宽的限制，在一些情况下使用Ray反而造成了负优化。我们在华为杭州研究所参观时得知其MindSpore框架除了采用模型并行与数据并行，还采用了自动并行、多流水交织并行、自动并行等手段达到了“藏通信”的效果，即在训练过程中，尽量重叠计算和通信，以充分利用 GPU 资源。例如，在一个 GPU 上进行前向传播和反向传播的同时，可以在其他 GPU 上进行梯度通信，减少等待时间和通信开销。这可以作为本项目未来努力的方向。
+
+### 2.数据自动分发的展望
+本次大作业中，通过调整batch_size来适配显存，在未来的方向中，我们可以用于显存较小的电脑的模型训练以及分布式训练。在可预想的方式中，我们可以设计一个框架，通过调整配置文件的参数实现显存的合理分配，从而实现模型训练的大众化，减少显卡租馈的成本。同时数据自动分发技术可以和模型切片技术结合，对显卡显存的优化与配置有更好的促进作用。
+
 ## 参考资料
 [1] [OpenRLHF github仓库](https://github.com/OpenLLMAI/OpenRLHF/tree/main)
 [2] [开启训练之旅: 基于Ray和vLLM构建70B+模型的开源RLHF全量训练框架 - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/678828949)
