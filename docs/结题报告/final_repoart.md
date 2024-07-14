@@ -555,6 +555,7 @@ ray+deepspeed联合使用（zero-2）训练llama2-7b的结果:
 ![alt text](pics/5.png)
 
 可以看到，通过使用ray+deepspeed训练大模型，吞吐率提高了42.8%
+
 ![alt text](pics/6.png)
 
 ## 创新点
